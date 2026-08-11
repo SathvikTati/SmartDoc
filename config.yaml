@@ -1,0 +1,27 @@
+app:
+  name: port6
+  environment: development
+
+upload:
+  directory: uploads
+  max_file_size_bytes: 5242880
+  max_files: 5
+
+  allowed_types:
+    - application/pdf
+    - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    - application/msword
+    - text/plain
+    - text/markdown
+
+database:
+  pool_pre_ping: true
+
+parser:
+  normalize_whitespace: true
+
+llm:
+  provider: ""
+  model: ""
+  temperature: 0.0
+  max_tokens: 4096
