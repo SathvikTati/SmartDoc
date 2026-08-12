@@ -20,8 +20,30 @@ database:
 parser:
   normalize_whitespace: true
 
+chunking:
+  chunk_size: 1000
+  chunk_overlap: 200
+
+embeddings:
+  provider: openai
+  model: text-embedding-3-small
+
+vector:
+  provider: chroma
+  collection: documents
+  persist_directory: chroma_data
+
 llm:
-  provider: ""
-  model: ""
+  provider: openai
+  model: gpt-5-mini
   temperature: 0.0
-  max_tokens: 4096
+
+temporal:
+  host: localhost:7233
+  namespace: default
+  task_queue: port6-document-processing
+
+vector:
+  provider: chroma
+  persist_directory: chroma_data
+  collection_name: port6_documents

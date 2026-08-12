@@ -41,9 +41,14 @@ if not DATABASE_URL:
         "DATABASE_URL is not configured in .env"
     )
 
-
+chunking_config = config.get("chunking", {})
+embeddings_config = config.get("embeddings", {})
+vector_config = config.get("vector", {})
+llm_config = config.get("llm", {})
 database_config = config.get("database", {})
 upload_config = config.get("upload", {})
 parser_config = config.get("parser", {})
 llm_config = config.get("llm", {})
 app_config = config.get("app", {})
+temporal_config = config.get("temporal", {})
+vector_config = config.get("vector",{},)

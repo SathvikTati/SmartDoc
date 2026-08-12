@@ -1,6 +1,6 @@
 from pathlib import Path
 import shutil
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, UploadFile
 from pydantic import BaseModel
@@ -8,7 +8,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from port6.config import upload_config
-from port6.services.db.database import db_dependency
 from port6.services.model.models import Document
 from port6.services.parsers.parser import ParsedDocument, parse
 
@@ -27,7 +26,7 @@ UPLOAD_DIR = Path(
 )
 
 UPLOAD_DIR.mkdir(
-    exist_ok=True
+    exist_ok=True,
 )
 
 MAX_SIZE = upload_config.get(
@@ -49,6 +48,7 @@ allowed_types = set(
 
 
 class FileSave(BaseModel):
+    id: UUID
     filename: str
     type: str
     size_bytes: int
@@ -72,7 +72,7 @@ async def validate_files(
     # Exact file hashes uploaded in this request
     uploaded_file_hashes = set()
 
-    # Content hashes uploaded in this request
+    # Parsed-content hashes uploaded in this request
     uploaded_content_hashes = set()
 
     for file in files:
@@ -84,13 +84,19 @@ async def validate_files(
         if file.size is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"Could not determine size of {file.filename}",
+                detail=(
+                    f"Could not determine size of "
+                    f"{file.filename}"
+                ),
             )
 
         if file.size > MAX_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail=f"{file.filename} is larger than 5 MB",
+                detail=(
+                    f"{file.filename} is larger than "
+                    f"{MAX_SIZE / (1024 * 1024):g} MB"
+                ),
             )
 
         # --------------------------------
@@ -161,16 +167,19 @@ async def validate_files(
 
         filename = Path(file.filename).name
 
-        safe_filename = f"{uuid4()}_{filename}"
+        safe_filename = (
+            f"{uuid4()}_{filename}"
+        )
 
         file_path = (
-            UPLOAD_DIR.absolute() / safe_filename
+            UPLOAD_DIR.absolute()
+            / safe_filename
         )
 
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(
                 file.file,
-                buffer
+                buffer,
             )
 
         # --------------------------------
@@ -179,20 +188,17 @@ async def validate_files(
 
         try:
             file_content = parse(file_path)
-            print("\n==============================")
-            print(f"FILE: {filename}")
-            print(f"TYPE: {file.content_type}")
-            print("==============================")
-            print(repr(file_content.text))
-            print("==============================\n")
 
         except Exception as e:
-            file_path.unlink(missing_ok=True)
+            file_path.unlink(
+                missing_ok=True,
+            )
 
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Could not parse {filename}: {str(e)}"
+                    f"Could not parse "
+                    f"{filename}: {str(e)}"
                 ),
             )
 
@@ -201,18 +207,21 @@ async def validate_files(
         # --------------------------------
 
         content_sha256 = calculate_content_sha256(
-            file_content.text
+            file_content.text,
         )
 
         # Duplicate content inside request
         if content_sha256 in uploaded_content_hashes:
-            file_path.unlink(missing_ok=True)
+            file_path.unlink(
+                missing_ok=True,
+            )
 
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"{filename} contains the same document "
-                    "content as another file in this upload"
+                    f"{filename} contains the same "
+                    "document content as another file "
+                    "in this upload"
                 ),
             )
 
@@ -220,23 +229,29 @@ async def validate_files(
         existing_content = (
             db.query(Document)
             .filter(
-                Document.content_sha256 == content_sha256
+                Document.content_sha256
+                == content_sha256
             )
             .first()
         )
 
         if existing_content:
-            file_path.unlink(missing_ok=True)
+            file_path.unlink(
+                missing_ok=True,
+            )
 
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"{filename} contains the same document "
-                    f"content as {existing_content.filename}"
+                    f"{filename} contains the same "
+                    "document content as "
+                    f"{existing_content.filename}"
                 ),
             )
 
-        uploaded_content_hashes.add(content_sha256)
+        uploaded_content_hashes.add(
+            content_sha256
+        )
 
         # --------------------------------
         # DATABASE
@@ -249,6 +264,8 @@ async def validate_files(
             sha256=sha256,
             content_sha256=content_sha256,
             storage_path=str(file_path),
+            content=file_content.text,
+            status="UPLOADED",
         )
 
         try:
@@ -260,7 +277,7 @@ async def validate_files(
             db.rollback()
 
             file_path.unlink(
-                missing_ok=True
+                missing_ok=True,
             )
 
             raise HTTPException(
@@ -274,13 +291,14 @@ async def validate_files(
             db.rollback()
 
             file_path.unlink(
-                missing_ok=True
+                missing_ok=True,
             )
 
             raise HTTPException(
                 status_code=500,
                 detail=(
-                    f"Could not save document: {str(e)}"
+                    f"Could not save document: "
+                    f"{str(e)}"
                 ),
             )
 
@@ -290,6 +308,7 @@ async def validate_files(
 
         result.append(
             {
+                "id": document.id,
                 "filename": filename,
                 "type": file.content_type,
                 "size_bytes": file.size,
