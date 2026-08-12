@@ -1,51 +1,106 @@
-# Environment variables / secrets
-.env
-.env.*
-!.env.example
+# ==============================
+# Python
+# ==============================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 
 # Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
+# ==============================
+# Environment / Secrets
+# ==============================
 
-# Test / coverage
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
+.env
+.env.*
+!.env.example
 
-# IDEs
+# ==============================
+# IDE / Editors
+# ==============================
+
 .vscode/
 .idea/
-
-# macOS
+*.swp
+*.swo
 .DS_Store
 
-# Build / packaging
+# ==============================
+# Testing / Coverage
+# ==============================
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ==============================
+# Type Checking / Linters
+# ==============================
+
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# ==============================
+# Build / Packaging
+# ==============================
+
 build/
 dist/
 *.egg-info/
+.eggs/
 
-# Logs
-*.log
+# ==============================
+# Project Data
+# ==============================
 
-# Uploaded files
-uploads/
+# Uploaded user files
+uploads/*
+!uploads/.gitkeep
 
-# Local database / temporary files
+# ChromaDB / vector database
+chroma_db/
+chroma/
+.chromadb/
+
+# Local databases
 *.db
 *.sqlite
 *.sqlite3
 
-# Ruff / mypy / tooling caches
-.ruff_cache/
-.mypy_cache/
+# Logs
+*.log
+logs/
 
-# OS temporary files
+# ==============================
+# Jupyter
+# ==============================
+
+.ipynb_checkpoints/
+
+# ==============================
+# OS
+# ==============================
+
+.DS_Store
+Thumbs.db
+
+# ==============================
+# Temporary files
+# ==============================
+
 *.tmp
 *.temp
+*.bak
+*.swp
+*.swo
