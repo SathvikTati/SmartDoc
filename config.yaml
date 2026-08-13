@@ -2,11 +2,11 @@ app:
   name: port6
   environment: development
 
+
 upload:
   directory: uploads
   max_file_size_bytes: 5242880
   max_files: 5
-
   allowed_types:
     - application/pdf
     - application/vnd.openxmlformats-officedocument.wordprocessingml.document
@@ -14,36 +14,50 @@ upload:
     - text/plain
     - text/markdown
 
+
 database:
   pool_pre_ping: true
 
+
 parser:
   normalize_whitespace: true
+
 
 chunking:
   chunk_size: 1000
   chunk_overlap: 200
 
+
+# Defaults only. Override per environment with LLM_PROVIDER and
+# EMBEDDINGS_PROVIDER in .env (openai | ollama).
 embeddings:
   provider: openai
-  model: text-embedding-3-small
 
-vector:
-  provider: chroma
-  collection: documents
-  persist_directory: chroma_data
 
 llm:
   provider: openai
-  model: gpt-5-mini
-  temperature: 0.0
 
-temporal:
-  host: localhost:7233
-  namespace: default
-  task_queue: port6-document-processing
+
+retrieval:
+  # Chunks with a distance above this are dropped before the answer is
+  # generated. null disables the filter.
+  max_distance: null
+
+
+summary:
+  # Documents are truncated before summarising so a large upload cannot
+  # blow past the model context window.
+  max_input_characters: 12000
+  max_words: 150
+
 
 vector:
   provider: chroma
   persist_directory: chroma_data
   collection_name: port6_documents
+
+
+temporal:
+  host: localhost:7233
+  namespace: default
+  task_queue: port6-document-processing

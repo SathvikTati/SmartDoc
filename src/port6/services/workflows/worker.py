@@ -13,6 +13,8 @@ from port6.services.workflows.activities import (
     mark_ready,
     embed_query,
     retrieve_chunks,
+    generate_answer,
+    summarize_document,
 )
 from port6.services.workflows.document_workflow import (
     DocumentProcessingWorkflow,
@@ -41,6 +43,7 @@ async def main() -> None:
             mark_processing,
             chunk_document_activity,
             embed_document,
+            summarize_document,
             mark_ready,
             mark_failed,
 
@@ -48,6 +51,7 @@ async def main() -> None:
             embed_query,
             retrieve_chunks,
             build_context,
+            generate_answer,
         ],
     )
 
@@ -64,10 +68,13 @@ async def main() -> None:
     print(" - mark_processing")
     print(" - chunk_document_activity")
     print(" - embed_document")
+    print(" - summarize_document")
     print(" - mark_ready")
     print(" - mark_failed")
     print(" - embed_query")
     print(" - retrieve_chunks")
+    print(" - build_context")
+    print(" - generate_answer")
 
     await worker.run()
 

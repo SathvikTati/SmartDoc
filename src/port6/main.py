@@ -10,6 +10,7 @@ from port6.services.documents.service import (
     delete_document,
     get_document,
     get_document_content,
+    get_document_summary,
     get_documents,
 )
 from port6.services.files.filevalidator import (
@@ -19,6 +20,7 @@ from port6.services.files.filevalidator import (
 from port6.services.schemas.document import (
     DocumentContentResponse,
     DocumentResponse,
+    DocumentSummaryResponse,
 )
 from port6.services.schemas.search import (
     SearchRequest,
@@ -26,6 +28,7 @@ from port6.services.schemas.search import (
 )
 from port6.services.schemas.query import (
     AskRequest,
+    AskResponse,
     QueryInput,
 )
 from port6.services.retrieval.service import search
@@ -111,6 +114,20 @@ async def get_document_content_by_id(
     )
 
 
+@app.get(
+    "/documents/{document_id}/summary",
+    response_model=DocumentSummaryResponse,
+)
+async def get_document_summary_by_id(
+    document_id: UUID,
+    db: db_dependency,
+):
+    return get_document_summary(
+        db,
+        document_id,
+    )
+
+
 @app.delete(
     "/documents/{document_id}",
     response_model=DocumentResponse,
@@ -142,7 +159,10 @@ async def search_documents(
         results=results,
     )
 
-@app.post("/ask")
+@app.post(
+    "/ask",
+    response_model=AskResponse,
+)
 async def ask(
     request: AskRequest,
 ):
@@ -162,7 +182,10 @@ async def ask(
         task_queue=temporal_config["task_queue"],
     )
 
-    return {
-        "question": request.question,
-        "context": result,
-    }
+    return AskResponse(
+        question=request.question,
+        answer=result["answer"],
+        answered=result["answered"],
+        citations=result["citations"],
+        sources=result["sources"],
+    )

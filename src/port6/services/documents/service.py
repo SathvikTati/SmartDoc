@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from port6.services.model.models import Document
+from port6.services.vector.chroma import delete_document_chunks
 
 
 def get_documents(db: Session) -> list[Document]:
@@ -41,14 +42,11 @@ def get_document_content(
     return get_document(db, document_id)
 
 
-from pathlib import Path
-from uuid import UUID
-
-from fastapi import HTTPException
-from sqlalchemy.orm import Session
-
-from port6.services.model.models import Document
-from port6.services.vector.chroma import delete_document_chunks
+def get_document_summary(
+    db: Session,
+    document_id: UUID,
+) -> Document:
+    return get_document(db, document_id)
 
 
 def delete_document(

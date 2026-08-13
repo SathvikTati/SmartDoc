@@ -71,6 +71,7 @@ uploads/*
 # ChromaDB / vector database
 chroma_db/
 chroma/
+chroma_data/
 .chromadb/
 
 # Local databases

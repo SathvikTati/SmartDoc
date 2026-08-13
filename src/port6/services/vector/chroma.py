@@ -36,23 +36,21 @@ def store_chunks(
         for chunk in chunks
     ]
 
-    vector_store._collection.upsert(
+    # add_documents upserts by id through the configured embedding
+    # function. Writing to _collection directly would make Chroma fall
+    # back to its own default embedder and store the wrong dimension.
+    vector_store.add_documents(
+        chunks,
         ids=ids,
-        documents=[
-            chunk.page_content
-            for chunk in chunks
-        ],
-        metadatas=[
-            chunk.metadata
-            for chunk in chunks
-        ],
     )
 
     return len(chunks)
 
+
 def delete_document_chunks(
     document_id: str,
 ) -> None:
+
     vector_store = get_vector_store()
 
     vector_store._collection.delete(
@@ -62,15 +60,24 @@ def delete_document_chunks(
     )
 
 
+def get_collection_count() -> int:
+    vector_store = get_vector_store()
+
+    return vector_store._collection.count()
+
+
 def search_documents(
     query: str,
     top_k: int = 5,
 ):
     vector_store = get_vector_store()
 
-    results = vector_store.similarity_search_with_score(
-        query,
-        k=top_k,
-    )
+    count = vector_store._collection.count()
 
-    return results
+    if count == 0:
+        return []
+
+    return vector_store.similarity_search_with_score(
+        query,
+        k=min(top_k, count),
+    )

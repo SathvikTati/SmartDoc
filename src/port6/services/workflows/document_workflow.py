@@ -38,6 +38,24 @@ class DocumentProcessingWorkflow:
                 ),
             )
 
+            # A summary is a convenience, not part of retrieval, so a
+            # model hiccup must not fail an otherwise ingested document.
+            try:
+                await workflow.execute_activity(
+                    "summarize_document",
+                    document_id,
+                    start_to_close_timeout=timedelta(
+                        minutes=10,
+                    ),
+                )
+
+            except Exception as summary_error:
+                workflow.logger.warning(
+                    "Could not summarise document %s: %s",
+                    document_id,
+                    summary_error,
+                )
+
             await workflow.execute_activity(
                 "mark_ready",
                 document_id,

@@ -65,6 +65,11 @@ class Document(Base):
         default=datetime.utcnow,
     )
 
+    summary = Column(
+        Text,
+        nullable=True,
+    )
+
     error_message = Column(
         Text,
         nullable=True,
