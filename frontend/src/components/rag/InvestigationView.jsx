@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { SearchX } from 'lucide-react'
+import { PlugZap, SearchX } from 'lucide-react'
 
 import { Badge } from '@/components/ui/Badge'
 import { Disclosure } from '@/components/ui/Disclosure'
@@ -17,6 +17,12 @@ const MODE_LABELS = {
 
 export function InvestigationView({ result, mode }) {
   const [activeNumber, setActiveNumber] = useState(null)
+
+  // An expired key or a stopped model server is an operator problem with
+  // an obvious fix, and it looks nothing like "no answer in the library".
+  const providerError =
+    result.metadata?.provider_error ?? result.debug?.provider_error ?? null
+
   const [expanded, setExpanded] = useState(new Set())
 
   const citedNumbers = useMemo(
@@ -83,7 +89,24 @@ export function InvestigationView({ result, mode }) {
           }
         />
 
-        {result.answered ? (
+        {providerError ? (
+          <div className="flex max-w-3xl items-start gap-2.5 rounded-md border border-danger/25 bg-danger-soft px-3 py-2.5">
+            <PlugZap className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-ink">
+                The model provider could not answer
+              </p>
+              <p className="mt-0.5 text-sm text-ink-muted">
+                {providerError.message}
+              </p>
+              <p className="mt-1.5 text-xs text-ink-subtle">
+                {providerError.retryable
+                  ? 'This usually clears on its own — try again in a moment.'
+                  : 'This will not fix itself; check the model settings in .env.'}
+              </p>
+            </div>
+          </div>
+        ) : result.answered ? (
           <AnswerBody
             text={result.answer}
             validNumbers={citedNumbers}

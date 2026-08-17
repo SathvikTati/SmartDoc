@@ -26,6 +26,7 @@ RETRIEVAL_METHOD = "semantic vector search (top-k)"
 async def run(
     question: str,
     top_k: int = 5,
+    document_ids: list[str] | None = None,
 ) -> RagResult:
 
     started = time.perf_counter()
@@ -33,6 +34,7 @@ async def run(
     chunks = await semantic_search(
         question,
         top_k=top_k,
+        document_ids=document_ids,
     )
 
     result = await generate_answer(question, chunks)
@@ -52,6 +54,7 @@ async def run(
             "mode": "naive",
             "top_k": top_k,
             "chunks_retrieved": len(chunks),
+            "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={
             "stages": [

@@ -33,28 +33,45 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_DOCUMENTS = 3
 DEFAULT_MAX_SECTIONS = 4
 
+# Content used in place of a missing summary when ranking documents.
+PROFILE_FALLBACK_CHARACTERS = 2000
+
 
 def select_documents(
     query: str,
     max_documents: int = DEFAULT_MAX_DOCUMENTS,
+    document_ids: list[str] | None = None,
 ) -> list[dict]:
-    """Stage 1. Pick candidate documents without touching the chunk index."""
+    """Stage 1. Pick candidate documents without touching the chunk index.
+
+    `document_ids` restricts the candidate pool to an explicit scope. The
+    ranking still runs inside it, so asking about four documents still
+    narrows to the ones that look relevant — it just cannot wander outside.
+    """
 
     db = SessionLocal()
 
     try:
-        documents = (
+        candidates = (
             db.query(Document)
             .filter(Document.status == "READY")
-            .all()
         )
+
+        if document_ids:
+            candidates = candidates.filter(Document.id.in_(document_ids))
+
+        documents = candidates.all()
 
         if not documents:
             return []
 
-        # The summary is effectively the whole signal. A filename is a
-        # couple of tokens, so a document that failed to summarise scores 0
-        # against most queries and can only be reached by stage 3.
+        # The summary carries the signal: a filename is a couple of tokens,
+        # so ranking on it alone is close to arbitrary.
+        #
+        # When a document has no summary — summarisation is best-effort and
+        # can fail — the opening of its content stands in. Cruder than a
+        # summary, but it keeps the document reachable at stage 1 instead
+        # of dropping it out of document-level ranking entirely.
         corpus = []
 
         for document in documents:
@@ -62,7 +79,8 @@ def select_documents(
                 part
                 for part in [
                     document.filename or "",
-                    document.summary or "",
+                    document.summary
+                    or (document.content or "")[:PROFILE_FALLBACK_CHARACTERS],
                 ]
                 if part
             )
@@ -79,6 +97,11 @@ def select_documents(
             key=lambda index: scores[index],
             reverse=True,
         )
+
+        # An explicit scope is the user's choice, so never drop part of it
+        # just because the default budget is smaller.
+        if document_ids:
+            max_documents = max(max_documents, len(documents))
 
         selected = []
 
@@ -284,12 +307,14 @@ async def hierarchical_search(
     top_k: int = 5,
     max_documents: int = DEFAULT_MAX_DOCUMENTS,
     max_sections: int = DEFAULT_MAX_SECTIONS,
+    document_ids: list[str] | None = None,
 ) -> dict:
     """Run all three stages and report what each one narrowed to."""
 
     documents = select_documents(
         query,
         max_documents=max_documents,
+        document_ids=document_ids,
     )
 
     if not documents:

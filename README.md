@@ -75,6 +75,50 @@ uv run streamlit run src/port6/frontend/app.py --server.address localhost
 
 ---
 
+## Configuration
+
+Three places, split by how often a value changes and what it affects.
+
+| Where | Holds | Changed by |
+|---|---|---|
+| `.env` | Everything about which model to call: providers, model names, temperature, API key, `OLLAMA_BASE_URL`, `DATABASE_URL`, CORS origins | Editing the file and restarting |
+| **Database** | The four prompts, plus runtime tuning: chunk size and overlap, `retrieval.max_distance`, summary limits, agent attempts and catalogue size, validation thresholds, history retention | `GET/PUT /settings`, `GET/PUT /prompts` — live on the next request |
+| `config.yaml` | Deploy-time facts: upload limits and allowed types, the Chroma path and collection | Editing the file and restarting |
+
+Provider choice is deliberately *not* runtime-tunable: switching embedding
+models changes the vector dimension and therefore the Chroma collection, so
+it means re-ingesting.
+
+Prompts are seeded from the code defaults on startup and only ever inserted,
+so an edit survives a restart. An edit that drops a placeholder the pipeline
+supplies — `{context}`, `{query}` — is rejected with a 422, because that
+failure would otherwise show up as a confidently wrong answer rather than an
+error.
+
+```bash
+curl http://localhost:8000/settings
+curl -X PUT http://localhost:8000/settings/chunking.chunk_size \
+  -H 'Content-Type: application/json' -d '{"value": 1200}'
+
+curl http://localhost:8000/prompts
+curl -X POST http://localhost:8000/prompts/answer_generation/reset
+```
+
+---
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+53 tests over the pure logic the pipeline turns on: heading detection and
+the section tree, chunk boundaries and the page a chunk is cited with, RRF
+fusion, citation extraction and hallucination-dropping, evidence overlap,
+provider-failure classification, and the prompt-edit guard.
+
+---
+
 ## Retrieval Modes
 
 The same question can be answered by three progressively more capable
@@ -168,10 +212,19 @@ curl -X POST http://localhost:8000/ask \
 `POST /ask/compare` runs one question through several modes at once, which is
 what the **Compare** page uses. `GET /modes` lists what is available.
 
+`GET /history` lists past questions and `GET /history/{id}` reopens one with
+the citations and trace it originally produced — history is stored server
+side, so it survives a refresh.
+
 `POST /search` is the same retrieval with no model in the loop. It takes a
 `mode` of `semantic`, `keyword` or `hybrid` and returns each chunk with its
 section, page, retriever ranks and scores — useful for judging retrieval
 without an answer in the way.
+
+`GET /documents/attention` lists documents that failed or that indexed
+without a summary, and `POST /documents/{id}/reprocess` runs one through
+ingestion again. Nothing is deleted on failure, so a document that broke on a
+stopped model server or an expired key can be recovered once that is fixed.
 
 `GET /documents/{id}/structure` returns the document's heading tree along
 with how many chunks it has in the index and how many pages it spans. The

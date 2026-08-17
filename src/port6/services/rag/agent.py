@@ -13,8 +13,12 @@
 
 The agent picks tools per question rather than always running the same
 retrieval. If validation finds the evidence thin, it plans again with a
-different strategy instead of answering anyway — bounded by MAX_ATTEMPTS so
-a question nothing can answer still terminates.
+different strategy instead of answering anyway — bounded by the
+`agent.max_attempts` setting so a question nothing can answer terminates.
+
+Tool results are combined by rank, not by raw score: a Chroma distance is
+better when lower and a BM25 score when higher, so sorting the two together
+ranked keyword-only plans backwards.
 
 Only the tools chosen and why are exposed, never the model's private
 reasoning.
@@ -27,7 +31,6 @@ import logging
 import time
 from typing import Annotated, TypedDict
 
-from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 
 from port6.services.llm.service import get_chat_model
@@ -35,12 +38,14 @@ from port6.services.rag.base import RagResult, RetrievedChunk
 from port6.services.rag.generation import generate_answer
 from port6.services.rag.tools import TOOLS, tool_catalogue
 from port6.services.rag.validation import validate_evidence
+from port6.services.settings.service import get_int, get_prompt
 
 
 logger = logging.getLogger(__name__)
 
 
-MAX_ATTEMPTS = 2
+# Reciprocal Rank Fusion constant, matching retrievers.fuse().
+RRF_K = 60
 
 RETRIEVAL_METHOD = (
     "LangGraph agent: plans and executes retrieval tools, "
@@ -55,6 +60,7 @@ def _keep_last(current, incoming):
 class AgentState(TypedDict, total=False):
     query: str
     top_k: int
+    document_ids: list[str]
 
     selected_tools: Annotated[list[str], _keep_last]
     plan_reason: Annotated[str, _keep_last]
@@ -72,42 +78,6 @@ class AgentState(TypedDict, total=False):
     citations: Annotated[list[RetrievedChunk], _keep_last]
 
     stages: Annotated[list[dict], _keep_last]
-
-
-PLANNER_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """
-You plan document retrieval. You do not answer questions.
-
-Available tools:
-
-{catalogue}
-
-Given the question, choose between 1 and 3 tools that
-together will find the evidence needed.
-
-Reply with ONLY a JSON object:
-
-{{"tools": ["tool_name", ...], "reason": "one short sentence"}}
-
-Guidance:
-- Questions naming exact terms, codes or rare words need
-  keyword_search.
-- Questions about what documents exist need document_lookup.
-- Questions whose answer sits in one part of one document
-  suit hierarchical_search.
-- Otherwise hybrid_search is a good default.
-- Return the JSON object and nothing else.
-""",
-        ),
-        (
-            "human",
-            "Question: {query}\nPrevious attempt: {previous}",
-        ),
-    ]
-)
 
 
 def rule_based_plan(
@@ -140,7 +110,7 @@ async def plan_with_model(
 ) -> tuple[list[str], str] | None:
 
     try:
-        chain = PLANNER_PROMPT | get_chat_model()
+        chain = get_prompt("retrieval_planner") | get_chat_model()
 
         response = await chain.ainvoke(
             {
@@ -250,6 +220,9 @@ async def node_tool_execution(state: AgentState) -> dict:
     runs: list[dict] = []
     metadata: dict = dict(state.get("retrieval_metadata") or {})
 
+    # chunk id -> [(tool, rank within that tool's results)]
+    tool_ranks: dict[str, list[tuple[str, int]]] = {}
+
     for name in state["selected_tools"]:
 
         tool = TOOLS.get(name)
@@ -261,6 +234,7 @@ async def node_tool_execution(state: AgentState) -> dict:
             outcome = await tool.run(
                 query=state["query"],
                 top_k=max(top_k * 2, 8),
+                document_ids=state.get("document_ids") or None,
             )
 
         except Exception as exc:
@@ -270,6 +244,13 @@ async def node_tool_execution(state: AgentState) -> dict:
             continue
 
         chunks = outcome.get("chunks") or []
+
+        # Each tool returns its own best-first ordering, so a chunk's
+        # position within one tool's results is meaningful. Its raw score
+        # is not comparable across tools — a Chroma distance is better when
+        # lower, a BM25 score when higher — so rank is what gets fused.
+        for rank, chunk in enumerate(chunks, start=1):
+            tool_ranks.setdefault(chunk.chunk_id, []).append((name, rank))
 
         collected.extend(chunks)
 
@@ -284,7 +265,8 @@ async def node_tool_execution(state: AgentState) -> dict:
         for key, value in (outcome.get("info") or {}).items():
             metadata.setdefault(key, value)
 
-    # Keep the best-scoring copy of any chunk several tools found.
+    # Keep one copy of any chunk several tools found, merging what each
+    # one knew about it.
     unique: dict[str, RetrievedChunk] = {}
 
     for chunk in collected:
@@ -299,12 +281,29 @@ async def node_tool_execution(state: AgentState) -> dict:
             if source not in existing.sources:
                 existing.sources.append(source)
 
-        if (
-            chunk.score is not None
-            and existing.score is not None
-            and chunk.score < existing.score
-        ):
-            existing.score = chunk.score
+        if existing.semantic_rank is None:
+            existing.semantic_rank = chunk.semantic_rank
+
+        if existing.keyword_rank is None:
+            existing.keyword_rank = chunk.keyword_rank
+
+    # Fuse by rank, not by raw score.
+    #
+    # Sorting these by `score` was a real bug: a Chroma distance is better
+    # when lower and a BM25 score when higher, so a keyword-only plan was
+    # ranked backwards and the agent answered from the *worst* matches it
+    # had found. RRF over each tool's own ordering is comparable.
+    for chunk_id, ranks in tool_ranks.items():
+
+        chunk = unique.get(chunk_id)
+
+        if chunk is None:
+            continue
+
+        chunk.fused_score = round(
+            sum(1.0 / (RRF_K + rank) for _, rank in ranks),
+            6,
+        )
 
     chunks = list(unique.values())
 
@@ -363,7 +362,7 @@ def route_after_validation(state: AgentState) -> str:
     if validation.get("sufficient"):
         return "context_builder"
 
-    if state.get("attempts", 0) >= MAX_ATTEMPTS:
+    if state.get("attempts", 0) >= get_int("agent.max_attempts"):
         # Out of retries: go on to answer, where insufficient evidence
         # becomes an honest "not found" rather than a guess.
         return "context_builder"
@@ -378,7 +377,11 @@ async def node_context_builder(state: AgentState) -> dict:
     top_k = state.get("top_k", 5)
 
     def sort_key(chunk: RetrievedChunk):
+        # Fused rank first — it is the only figure comparable across tools.
+        # Agreement between tools breaks ties, and the raw score is a last
+        # resort for anything that arrived without a rank.
         return (
+            -(chunk.fused_score or 0.0),
             -len(chunk.sources),
             chunk.score if chunk.score is not None else 1e9,
         )
@@ -494,6 +497,7 @@ def get_graph():
 async def run(
     question: str,
     top_k: int = 5,
+    document_ids: list[str] | None = None,
 ) -> RagResult:
 
     started = time.perf_counter()
@@ -502,6 +506,7 @@ async def run(
         {
             "query": question,
             "top_k": top_k,
+            "document_ids": document_ids or [],
         }
     )
 
@@ -528,6 +533,7 @@ async def run(
             "attempts": final.get("attempts", 0),
             "validation": final.get("validation_result"),
             "chunks_retrieved": len(final.get("final_context") or []),
+            "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={
             "plan_reason": final.get("plan_reason"),

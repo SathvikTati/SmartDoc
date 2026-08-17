@@ -20,13 +20,10 @@ from port6.services.rag.retrievers import (
     keyword_search,
     semantic_search,
 )
+from port6.services.settings.service import get_int
 
 
 logger = logging.getLogger(__name__)
-
-
-# How much of each summary the library catalogue shows per document.
-CATALOGUE_SUMMARY_CHARACTERS = 140
 
 
 @dataclass
@@ -43,9 +40,14 @@ class Tool:
 async def tool_semantic_search(
     query: str,
     top_k: int = 8,
+    document_ids: list[str] | None = None,
 ) -> dict:
 
-    chunks = await semantic_search(query, top_k=top_k)
+    chunks = await semantic_search(
+        query,
+        top_k=top_k,
+        document_ids=document_ids,
+    )
 
     return {
         "chunks": chunks,
@@ -56,9 +58,14 @@ async def tool_semantic_search(
 async def tool_keyword_search(
     query: str,
     top_k: int = 8,
+    document_ids: list[str] | None = None,
 ) -> dict:
 
-    chunks = keyword_search(query, top_k=top_k)
+    chunks = keyword_search(
+        query,
+        top_k=top_k,
+        document_ids=document_ids,
+    )
 
     return {
         "chunks": chunks,
@@ -69,10 +76,19 @@ async def tool_keyword_search(
 async def tool_hybrid_search(
     query: str,
     top_k: int = 8,
+    document_ids: list[str] | None = None,
 ) -> dict:
 
-    semantic = await semantic_search(query, top_k=top_k)
-    keyword = keyword_search(query, top_k=top_k)
+    semantic = await semantic_search(
+        query,
+        top_k=top_k,
+        document_ids=document_ids,
+    )
+    keyword = keyword_search(
+        query,
+        top_k=top_k,
+        document_ids=document_ids,
+    )
 
     chunks = fuse(semantic, keyword, top_k=top_k)
 
@@ -89,11 +105,13 @@ async def tool_hybrid_search(
 async def tool_hierarchical_search(
     query: str,
     top_k: int = 8,
+    document_ids: list[str] | None = None,
 ) -> dict:
 
     result = await hierarchical_search(
         query,
         top_k=top_k,
+        document_ids=document_ids,
     )
 
     return {
@@ -108,6 +126,7 @@ async def tool_hierarchical_search(
 async def tool_document_lookup(
     query: str,
     top_k: int = 8,
+    document_ids: list[str] | None = None,
 ) -> dict:
     """List what is in the library.
 
@@ -119,9 +138,22 @@ async def tool_document_lookup(
     db = SessionLocal()
 
     try:
+        limit = get_int("agent.catalogue_limit")
+
+        base = db.query(Document).filter(Document.status == "READY")
+
+        # A scoped question is about those documents, so the catalogue
+        # lists them rather than the whole library.
+        if document_ids:
+            base = base.filter(Document.id.in_(document_ids))
+
+        total = base.count()
+
+        # Bounded: a library of hundreds would otherwise be pasted whole
+        # into the context window for a single catalogue question.
         documents = (
-            db.query(Document)
-            .filter(Document.status == "READY")
+            base.order_by(Document.created_at.desc())
+            .limit(limit)
             .all()
         )
 
@@ -140,9 +172,15 @@ async def tool_document_lookup(
                 "info": {"documents": []},
             }
 
+        summary_characters = get_int("agent.catalogue_summary_characters")
+
         lines = [
-            "The document library contains "
-            f"{len(catalogue)} document(s):"
+            f"The document library contains {total} document(s)."
+            + (
+                f" Showing the {len(catalogue)} most recent:"
+                if total > len(catalogue)
+                else ""
+            )
         ]
 
         for entry in catalogue:
@@ -156,10 +194,8 @@ async def tool_document_lookup(
             if entry["summary"]:
                 summary = " ".join(entry["summary"].split())
 
-                if len(summary) > CATALOGUE_SUMMARY_CHARACTERS:
-                    summary = (
-                        summary[:CATALOGUE_SUMMARY_CHARACTERS].rstrip() + "…"
-                    )
+                if len(summary) > summary_characters:
+                    summary = summary[:summary_characters].rstrip() + "…"
 
                 line += f" — {summary}"
 
@@ -176,7 +212,11 @@ async def tool_document_lookup(
 
         return {
             "chunks": [listing],
-            "info": {"documents": catalogue},
+            "info": {
+                "documents": catalogue,
+                "total_documents": total,
+                "truncated": total > len(catalogue),
+            },
         }
 
     finally:

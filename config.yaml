@@ -3,6 +3,10 @@ app:
   environment: development
 
 
+# Deploy-time facts. Runtime tuning (chunk size, retrieval thresholds,
+# summary limits, agent behaviour) lives in the `settings` table and is
+# changed through the API; everything about which model to call lives in
+# .env. Only values needed before the database is reachable belong here.
 upload:
   directory: uploads
   max_file_size_bytes: 5242880
@@ -21,34 +25,6 @@ database:
 
 parser:
   normalize_whitespace: true
-
-
-chunking:
-  chunk_size: 1000
-  chunk_overlap: 200
-
-
-# Defaults only. Override per environment with LLM_PROVIDER and
-# EMBEDDINGS_PROVIDER in .env (openai | ollama).
-embeddings:
-  provider: openai
-
-
-llm:
-  provider: openai
-
-
-retrieval:
-  # Chunks with a distance above this are dropped before the answer is
-  # generated. null disables the filter.
-  max_distance: null
-
-
-summary:
-  # Documents are truncated before summarising so a large upload cannot
-  # blow past the model context window.
-  max_input_characters: 12000
-  max_words: 150
 
 
 vector:

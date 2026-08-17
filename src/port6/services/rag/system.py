@@ -9,10 +9,10 @@ comparable on identical input.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 
+from port6.services.llm.errors import classify as classify_provider_error
 from port6.services.rag import agent, hybrid, naive
 from port6.services.rag.base import RagMode, RagResult
 
@@ -48,7 +48,13 @@ async def query(
     question: str,
     mode: str | RagMode = RagMode.NAIVE,
     top_k: int = 5,
+    document_ids: list[str] | None = None,
 ) -> RagResult:
+    """Answer a question, optionally restricted to specific documents.
+
+    `document_ids` is a hard scope: retrieval cannot reach outside it in
+    any mode. Passing none searches the whole library.
+    """
 
     if not question or not question.strip():
         raise ValueError("Question cannot be empty")
@@ -61,6 +67,7 @@ async def query(
         result = await RUNNERS[resolved](
             question,
             top_k=top_k,
+            document_ids=document_ids,
         )
 
     except Exception as exc:
@@ -72,11 +79,20 @@ async def query(
             question,
         )
 
+        # An expired key or a stopped Ollama is an operator problem with an
+        # obvious fix, and it looks nothing like a bad question. Say which
+        # one it is rather than surfacing a raw traceback.
+        provider_error = classify_provider_error(exc)
+
+        answer = (
+            provider_error.message
+            if provider_error
+            else f"The {resolved.value} pipeline failed: {exc}"
+        )
+
         return RagResult(
             question=question,
-            answer=(
-                f"The {resolved.value} pipeline failed: {exc}"
-            ),
+            answer=answer,
             answered=False,
             retrieval_method=resolved.value,
             latency_ms=round(
@@ -86,6 +102,19 @@ async def query(
             metadata={
                 "mode": resolved.value,
                 "error": str(exc),
+                **(
+                    {"provider_error": provider_error.as_dict()}
+                    if provider_error
+                    else {}
+                ),
+            },
+            debug={
+                "error": answer,
+                **(
+                    {"provider_error": provider_error.as_dict()}
+                    if provider_error
+                    else {}
+                ),
             },
         )
 
@@ -98,6 +127,7 @@ async def compare_modes(
     question: str,
     modes: list[str | RagMode] | None = None,
     top_k: int = 5,
+    document_ids: list[str] | None = None,
 ) -> dict[str, RagResult]:
     """Run the same question through several modes for side-by-side review."""
 
@@ -115,6 +145,7 @@ async def compare_modes(
             question,
             mode=mode,
             top_k=top_k,
+            document_ids=document_ids,
         )
 
     return results

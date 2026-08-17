@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from port6.services.schemas.common import UtcDatetime
+
 
 class DocumentResponse(BaseModel):
     id: UUID
@@ -13,9 +15,16 @@ class DocumentResponse(BaseModel):
     content_sha256: str
     storage_path: str
     status: str
-    created_at: datetime
+    created_at: UtcDatetime
     summary: str | None = None
     error_message: str | None = None
+
+    # Ingestion attempts. `failure_kind` is one of provider | parse |
+    # storage | unknown, and is what tells a client whether retrying is
+    # likely to help.
+    attempts: int = 0
+    last_attempt_at: UtcDatetime | None = None
+    failure_kind: str | None = None
 
     model_config = ConfigDict(
         from_attributes=True

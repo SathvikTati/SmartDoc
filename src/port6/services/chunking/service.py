@@ -10,8 +10,8 @@ from __future__ import annotations
 from langchain_core.documents import Document as LangChainDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from port6.config import chunking_config
 from port6.services.parsers.parser import ParsedBlock
+from port6.services.settings.service import get_int
 from port6.services.structure.service import (
     Section,
     build_sections,
@@ -27,20 +27,64 @@ SEPARATORS = [
     "",
 ]
 
+# How sections join their blocks; the offset maths below depends on it.
+BLOCK_SEPARATOR = "\n\n"
+
 
 def _splitter() -> RecursiveCharacterTextSplitter:
     return RecursiveCharacterTextSplitter(
-        chunk_size=chunking_config.get(
-            "chunk_size",
-            1000,
-        ),
-        chunk_overlap=chunking_config.get(
-            "chunk_overlap",
-            200,
-        ),
+        chunk_size=get_int("chunking.chunk_size"),
+        chunk_overlap=get_int("chunking.chunk_overlap"),
         length_function=len,
         separators=SEPARATORS,
+        # Offsets are what let a chunk be traced back to the block, and
+        # therefore the page, it actually came from.
+        add_start_index=True,
     )
+
+
+def page_index(
+    section: Section,
+) -> list[tuple[int, int, int | None]]:
+    """`(start, end, page)` for each block, in the section's own text.
+
+    Section text is the blocks joined by a blank line, so a chunk's start
+    offset locates the block it began in — and that block knows its page.
+    """
+
+    spans: list[tuple[int, int, int | None]] = []
+    cursor = 0
+
+    for block in section.blocks:
+        length = len(block.text)
+        spans.append((cursor, cursor + length, block.page_number))
+        cursor += length + len(BLOCK_SEPARATOR)
+
+    return spans
+
+
+def page_for_offset(
+    spans: list[tuple[int, int, int | None]],
+    offset: int,
+    fallback: int | None,
+) -> int | None:
+    """The page of the block a chunk starts in.
+
+    Using the section's first page for every chunk was wrong: a section
+    spanning pages 4-7 cited all of its chunks as page 4.
+    """
+
+    for start, end, page in spans:
+        if start <= offset < end:
+            return page if page is not None else fallback
+
+    # An offset past the last block means the splitter landed on a
+    # separator; the nearest preceding block is the honest answer.
+    for start, end, page in reversed(spans):
+        if offset >= start and page is not None:
+            return page
+
+    return fallback
 
 
 def clean_metadata(
@@ -82,12 +126,13 @@ def chunk_sections(
         if not section_text.strip():
             continue
 
-        # Prefer the page the section starts on; a section rarely spans many.
-        page_number = section.page_start
+        spans = page_index(section)
 
-        for piece in splitter.split_text(section_text):
+        # create_documents rather than split_text: it carries the start
+        # offset of each piece, which is how the page is recovered.
+        for piece in splitter.create_documents([section_text]):
 
-            if not piece.strip():
+            if not piece.page_content.strip():
                 continue
 
             chunk_index = len(chunks)
@@ -102,12 +147,16 @@ def chunk_sections(
                 "section_path": section.path_label,
                 "section_level": section.level,
                 "parent_section_id": section.parent_section_id,
-                "page_number": page_number,
+                "page_number": page_for_offset(
+                    spans,
+                    piece.metadata.get("start_index", 0),
+                    section.page_start,
+                ),
             }
 
             chunks.append(
                 LangChainDocument(
-                    page_content=piece,
+                    page_content=piece.page_content,
                     metadata=clean_metadata(metadata),
                 )
             )

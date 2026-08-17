@@ -1,6 +1,15 @@
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 from port6.services.rag.base import RagMode, RagResult
+
+
+SCOPE_DESCRIPTION = (
+    "Restrict retrieval to these documents. A hard scope in every mode: "
+    "nothing outside the list can be retrieved or cited. Omit to search "
+    "the whole library."
+)
 
 
 class AskRequest(BaseModel):
@@ -19,9 +28,14 @@ class AskRequest(BaseModel):
         default=RagMode.NAIVE,
         description=(
             "Retrieval strategy: naive (vector only), "
-            "hybrid (semantic + BM25 + hierarchical + version aware), "
+            "hybrid (semantic + BM25 over hierarchical narrowing), "
             "or agentic (LangGraph tool-planning agent)."
         ),
+    )
+
+    document_ids: list[UUID] | None = Field(
+        default=None,
+        description=SCOPE_DESCRIPTION,
     )
 
 
@@ -39,6 +53,11 @@ class CompareRequest(BaseModel):
 
     modes: list[RagMode] = Field(
         default_factory=lambda: list(RagMode),
+    )
+
+    document_ids: list[UUID] | None = Field(
+        default=None,
+        description=SCOPE_DESCRIPTION,
     )
 
 

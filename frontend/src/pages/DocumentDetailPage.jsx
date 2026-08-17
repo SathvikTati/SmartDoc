@@ -210,7 +210,7 @@ export function DocumentDetailPage() {
         actions={
           document && (
             <>
-              <Link to={`/ask?document=${encodeURIComponent(document.filename)}`}>
+              <Link to={`/ask?docs=${document.id}`}>
                 <Button size="sm" variant="primary">
                   <MessageSquareText className="h-3.5 w-3.5" />
                   Ask about this document

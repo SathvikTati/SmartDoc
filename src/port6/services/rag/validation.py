@@ -4,21 +4,25 @@ Checks the retrieved context actually supports an answer before that answer
 is trusted, so the agentic mode can retry with a different strategy instead
 of generating from thin evidence.
 
-A cheap deterministic check runs first and can only ever say "insufficient"
-for obvious cases (nothing retrieved, no overlap with the question at all).
-The model check runs second and is the one that judges support.
+A cheap deterministic check runs first. It rejects the obvious cases
+(nothing retrieved, no overlap with the question) and — just as importantly —
+accepts the obvious ones: above `validation.skip_model_above` the model is
+never asked. Small models produce false negatives on plainly good sources,
+and in agentic mode each one costs a full retry that changes nothing.
+
+The model check runs only in the band between those two thresholds, which is
+where the judgement is actually needed.
 """
 
 from __future__ import annotations
 
 import logging
 
-from langchain_core.prompts import ChatPromptTemplate
-
 from port6.services.llm.service import get_chat_model
 from port6.services.rag.base import RetrievedChunk
 from port6.services.rag.generation import build_context
 from port6.services.rag.retrievers import tokenize
+from port6.services.settings.service import get_float, get_prompt
 
 
 logger = logging.getLogger(__name__)
@@ -36,34 +40,6 @@ STOPWORDS = {
     "gets", "got", "there", "here", "any", "all", "some", "every", "each",
     "policy", "document", "documents",
 }
-
-
-VALIDATION_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """
-You check whether retrieved sources contain enough
-information to answer a question.
-
-You are NOT answering the question.
-
-Reply with exactly one word:
-
-- SUFFICIENT if the sources contain the facts needed
-  to answer the question.
-- INSUFFICIENT if they do not.
-
-Judge only what the sources say. Do not use outside
-knowledge. Reply with the single word and nothing else.
-""",
-        ),
-        (
-            "human",
-            "Question: {query}\n\nSources:\n\n{context}",
-        ),
-    ]
-)
 
 
 class ValidationResult:
@@ -117,7 +93,8 @@ async def validate_evidence(
     query: str,
     chunks: list[RetrievedChunk],
     use_model: bool = True,
-    min_overlap: float = 0.2,
+    min_overlap: float | None = None,
+    skip_model_above: float | None = None,
 ) -> ValidationResult:
 
     if not chunks:
@@ -126,6 +103,12 @@ async def validate_evidence(
             reason="Nothing was retrieved.",
             method="empty",
         )
+
+    if min_overlap is None:
+        min_overlap = get_float("validation.min_overlap")
+
+    if skip_model_above is None:
+        skip_model_above = get_float("validation.skip_model_above")
 
     overlap = keyword_overlap(query, chunks)
 
@@ -139,6 +122,20 @@ async def validate_evidence(
             method="lexical",
         )
 
+    # A retrieval this strong does not need a second opinion, and asking
+    # for one is where the false negatives came from: a small model would
+    # call obviously-good sources insufficient, costing a full retry that
+    # produced the same answer. Above the threshold, trust the retrieval.
+    if overlap >= skip_model_above:
+        return ValidationResult(
+            sufficient=True,
+            reason=(
+                f"Retrieved text covers {overlap:.0%} of the question's "
+                "key terms; accepted without a model check."
+            ),
+            method="lexical-strong",
+        )
+
     if not use_model:
         return ValidationResult(
             sufficient=True,
@@ -147,7 +144,7 @@ async def validate_evidence(
         )
 
     try:
-        chain = VALIDATION_PROMPT | get_chat_model()
+        chain = get_prompt("evidence_validation") | get_chat_model()
 
         response = await chain.ainvoke(
             {

@@ -111,6 +111,67 @@ def get_document_structure(
     )
 
 
+def documents_needing_attention(
+    db: Session,
+) -> list[Document]:
+    """Documents that did not fully ingest and could be retried.
+
+    Two cases, both recoverable: an outright FAILED document, and one that
+    reached READY without a summary — retrievable by chunk, but invisible
+    to document-level ranking until it is summarised.
+    """
+
+    return (
+        db.query(Document)
+        .filter(
+            (Document.status == "FAILED")
+            | ((Document.status == "READY") & (Document.summary.is_(None)))
+        )
+        .order_by(Document.created_at.desc())
+        .all()
+    )
+
+
+def prepare_reprocess(
+    db: Session,
+    document_id: UUID,
+) -> Document:
+    """Check a document can be reprocessed, and clear its previous failure.
+
+    The uploaded file is never deleted on failure, which is what makes a
+    retry possible at all: whatever broke — a stopped Ollama, an expired
+    key — can be fixed and the same bytes run through again.
+    """
+
+    document = get_document(db, document_id)
+
+    storage_path = Path(document.storage_path)
+
+    if not storage_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "The stored file for this document is gone, so it cannot "
+                "be reprocessed. Upload it again."
+            ),
+        )
+
+    if document.status == "PROCESSING":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This document is already being processed.",
+        )
+
+    document.status = "UPLOADED"
+    document.error_message = None
+    document.failure_kind = None
+
+    db.commit()
+    db.refresh(document)
+
+    return document
+
+
 def delete_document(
     db: Session,
     document_id: UUID,

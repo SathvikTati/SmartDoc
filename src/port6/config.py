@@ -85,31 +85,6 @@ parser_config = config.get(
     {}
 )
 
-chunking_config = config.get(
-    "chunking",
-    {}
-)
-
-embeddings_config = config.get(
-    "embeddings",
-    {}
-)
-
-llm_config = config.get(
-    "llm",
-    {}
-)
-
-retrieval_config = config.get(
-    "retrieval",
-    {}
-)
-
-summary_config = config.get(
-    "summary",
-    {}
-)
-
 vector_config = config.get(
     "vector",
     {}
@@ -134,8 +109,10 @@ upload_config["directory"] = str(
 # -------------------------------------------------------------------
 # Model providers
 #
-# LLM_PROVIDER / EMBEDDINGS_PROVIDER select between OpenAI and a local
-# Ollama server. Set them in .env; config.yaml holds the defaults.
+# Everything about which model to call lives here, read from .env only.
+# Swapping providers changes vector dimensions and therefore the Chroma
+# collection, so it is a deployment decision rather than a runtime one —
+# which is why it is not in the settings table with the tunables.
 # -------------------------------------------------------------------
 
 SUPPORTED_PROVIDERS = (
@@ -146,12 +123,12 @@ SUPPORTED_PROVIDERS = (
 
 def _resolve_provider(
     env_var: str,
-    yaml_default: str,
+    default: str = "ollama",
 ) -> str:
 
     provider = os.getenv(
         env_var,
-        yaml_default,
+        default,
     ).strip().lower()
 
     if provider not in SUPPORTED_PROVIDERS:
@@ -163,21 +140,9 @@ def _resolve_provider(
     return provider
 
 
-LLM_PROVIDER = _resolve_provider(
-    "LLM_PROVIDER",
-    llm_config.get(
-        "provider",
-        "openai",
-    ),
-)
+LLM_PROVIDER = _resolve_provider("LLM_PROVIDER")
 
-EMBEDDINGS_PROVIDER = _resolve_provider(
-    "EMBEDDINGS_PROVIDER",
-    embeddings_config.get(
-        "provider",
-        "openai",
-    ),
-)
+EMBEDDINGS_PROVIDER = _resolve_provider("EMBEDDINGS_PROVIDER")
 
 
 # -------------------------------------------------------------------

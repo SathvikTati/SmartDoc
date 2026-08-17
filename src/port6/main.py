@@ -1,20 +1,34 @@
+import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import BackgroundTasks, FastAPI, File, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette import status
 
 from port6.services.db.database import db_dependency
 from port6.services.documents.service import (
     delete_document,
+    documents_needing_attention,
     get_document,
     get_document_content,
     get_document_structure,
     get_document_summary,
     get_documents,
+    prepare_reprocess,
 )
+from port6.services.history import service as history
+from port6.services.schemas.admin import (
+    PromptResponse,
+    PromptUpdate,
+    QueryRunDetail,
+    QueryRunPage,
+    SettingResponse,
+    SettingUpdate,
+)
+from port6.services.settings import service as settings_service
 from port6.services.files.filevalidator import (
     FileSave,
     validate_files,
@@ -40,12 +54,38 @@ from port6.services.rag.system import compare_modes, query as rag_query
 from port6.services.retrieval.service import search
 
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Seed settings and prompts before the first request.
+
+    Only inserts rows that are missing, so an edited prompt survives a
+    restart. A failure here is logged rather than fatal — the services fall
+    back to the code defaults, which are the same values being seeded.
+    """
+
+    try:
+        settings_service.seed()
+        logger.info("Settings and prompts seeded")
+
+    except Exception as exc:
+        logger.warning(
+            "Could not seed settings and prompts, using code defaults: %s",
+            exc,
+        )
+
+    yield
+
+
 app = FastAPI(
     title="PORT-6",
     description=(
         "Document ingestion and retrieval, with three selectable "
         "RAG strategies."
     ),
+    lifespan=lifespan,
 )
 
 
@@ -118,6 +158,22 @@ async def list_documents(
 
 
 @app.get(
+    "/documents/attention",
+    response_model=list[DocumentResponse],
+)
+async def list_documents_needing_attention(
+    db: db_dependency,
+):
+    """Documents that failed, or that indexed without a summary.
+
+    Declared before `/documents/{document_id}` so "attention" is not
+    parsed as a UUID.
+    """
+
+    return documents_needing_attention(db)
+
+
+@app.get(
     "/documents/{document_id}",
     response_model=DocumentResponse,
 )
@@ -157,6 +213,32 @@ async def get_document_summary_by_id(
         db,
         document_id,
     )
+
+
+@app.post(
+    "/documents/{document_id}/reprocess",
+    response_model=DocumentResponse,
+)
+async def reprocess_document(
+    document_id: UUID,
+    db: db_dependency,
+    background_tasks: BackgroundTasks,
+):
+    """Run a document through ingestion again.
+
+    The uploaded file is kept even when processing fails, so a document
+    that broke on a stopped model server or an expired key can be picked
+    up again once that is fixed.
+    """
+
+    document = prepare_reprocess(db, document_id)
+
+    background_tasks.add_task(
+        process_document,
+        str(document.id),
+    )
+
+    return document
 
 
 @app.get(
@@ -214,11 +296,30 @@ async def search_documents(
 async def ask(
     request: AskRequest,
 ):
-    return await rag_query(
+    result = await rag_query(
         question=request.question,
         mode=request.mode,
         top_k=request.top_k,
+        document_ids=(
+            [str(value) for value in request.document_ids]
+            if request.document_ids
+            else None
+        ),
     )
+
+    # Recorded after the fact and best-effort: a history write must never
+    # turn a successful answer into a failed request.
+    run_id = history.record_run(
+        question=request.question,
+        mode=request.mode.value,
+        top_k=request.top_k,
+        result=result,
+    )
+
+    if run_id:
+        result.metadata["run_id"] = run_id
+
+    return result
 
 
 @app.post(
@@ -234,12 +335,163 @@ async def ask_compare(
         question=request.question,
         modes=list(request.modes),
         top_k=request.top_k,
+        document_ids=(
+            [str(value) for value in request.document_ids]
+            if request.document_ids
+            else None
+        ),
     )
 
     return CompareResponse(
         question=request.question,
         results=results,
     )
+
+
+# -------------------------------------------------------------------
+# Query history
+# -------------------------------------------------------------------
+
+@app.get(
+    "/history",
+    response_model=QueryRunPage,
+)
+async def list_history(
+    db: db_dependency,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    mode: str | None = None,
+    answered: bool | None = None,
+):
+    """Past questions, newest first. Summaries only."""
+
+    return history.list_runs(
+        db,
+        limit=limit,
+        offset=offset,
+        mode=mode,
+        answered=answered,
+    )
+
+
+@app.get(
+    "/history/{run_id}",
+    response_model=QueryRunDetail,
+)
+async def get_history_run(
+    run_id: UUID,
+    db: db_dependency,
+):
+    """One past question with the full result it originally returned."""
+
+    return history.get_run(db, run_id)
+
+
+@app.delete(
+    "/history/{run_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_history_run(
+    run_id: UUID,
+    db: db_dependency,
+):
+    history.delete_run(db, run_id)
+
+
+@app.delete("/history")
+async def clear_history(
+    db: db_dependency,
+):
+    return {"deleted": history.clear_runs(db)}
+
+
+# -------------------------------------------------------------------
+# Settings and prompts
+# -------------------------------------------------------------------
+
+@app.get(
+    "/settings",
+    response_model=list[SettingResponse],
+)
+async def list_settings():
+    """Runtime-tunable values. Provider and model choices live in .env."""
+
+    return settings_service.list_settings()
+
+
+@app.put(
+    "/settings/{key}",
+    response_model=SettingResponse,
+)
+async def update_setting(
+    key: str,
+    request: SettingUpdate,
+):
+    try:
+        return settings_service.update_setting(key, request.value)
+
+    except settings_service.UnknownSetting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No setting named {key!r}",
+        )
+
+
+@app.get(
+    "/prompts",
+    response_model=list[PromptResponse],
+)
+async def list_prompts():
+    """The live prompts, with the text each one shipped with."""
+
+    return settings_service.list_prompts()
+
+
+@app.put(
+    "/prompts/{name}",
+    response_model=PromptResponse,
+)
+async def update_prompt(
+    name: str,
+    request: PromptUpdate,
+):
+    try:
+        return settings_service.update_prompt(
+            name,
+            system=request.system,
+            human=request.human,
+        )
+
+    except settings_service.UnknownPrompt:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No prompt named {name!r}",
+        )
+
+    except settings_service.InvalidPrompt as exc:
+        # A prompt missing a placeholder would silently drop the context or
+        # the question, so it is rejected here rather than at request time.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+
+@app.post(
+    "/prompts/{name}/reset",
+    response_model=PromptResponse,
+)
+async def reset_prompt(name: str):
+    """Restore a prompt to the text the release shipped with."""
+
+    try:
+        return settings_service.reset_prompt(name)
+
+    except settings_service.UnknownPrompt:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No prompt named {name!r}",
+        )
 
 
 @app.get("/modes")

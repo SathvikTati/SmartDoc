@@ -64,6 +64,7 @@ def _rerank(
 async def run(
     question: str,
     top_k: int = 5,
+    document_ids: list[str] | None = None,
 ) -> RagResult:
 
     started = time.perf_counter()
@@ -75,6 +76,7 @@ async def run(
     hierarchy = await hierarchical_search(
         question,
         top_k=candidate_k,
+        document_ids=document_ids,
     )
 
     hierarchical_chunks = hierarchy["chunks"]
@@ -83,11 +85,13 @@ async def run(
     semantic_chunks = await semantic_search(
         question,
         top_k=candidate_k,
+        document_ids=document_ids,
     )
 
     keyword_chunks = keyword_search(
         question,
         top_k=candidate_k,
+        document_ids=document_ids,
     )
 
     fused = fuse(
@@ -123,6 +127,7 @@ async def run(
             "documents_considered": len(hierarchy["documents"]),
             "sections_considered": len(hierarchy["sections"]),
             "chunks_retrieved": len(chunks),
+            "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={
             "stages": [

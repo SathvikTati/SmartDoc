@@ -105,6 +105,16 @@ export function deleteDocument(id) {
   return call(() => client.delete(`/documents/${id}`))
 }
 
+/** Documents that failed, or that indexed without a summary. */
+export function listDocumentsNeedingAttention() {
+  return call(() => client.get('/documents/attention'))
+}
+
+/** Run a document through ingestion again. The file was never deleted. */
+export function reprocessDocument(id) {
+  return call(() => client.post(`/documents/${id}/reprocess`))
+}
+
 export function resolveMimeType(file) {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
   return EXTENSION_MIME[extension] ?? file.type ?? 'application/octet-stream'
@@ -138,21 +148,35 @@ export function listModes() {
   return call(() => client.get('/modes'))
 }
 
-export function ask(question, mode, topK, signal) {
+/**
+ * `documentIds` is a hard scope: retrieval cannot reach outside it in any
+ * mode. Omit or pass an empty list to search the whole library.
+ */
+export function ask(question, mode, topK, documentIds, signal) {
   return call(() =>
     client.post(
       '/ask',
-      { question, mode, top_k: topK },
+      {
+        question,
+        mode,
+        top_k: topK,
+        document_ids: documentIds?.length ? documentIds : null,
+      },
       { timeout: ASK_TIMEOUT, signal },
     ),
   )
 }
 
-export function compare(question, modes, topK, signal) {
+export function compare(question, modes, topK, documentIds, signal) {
   return call(() =>
     client.post(
       '/ask/compare',
-      { question, modes, top_k: topK },
+      {
+        question,
+        modes,
+        top_k: topK,
+        document_ids: documentIds?.length ? documentIds : null,
+      },
       // Three pipelines run back to back against the same local model.
       { timeout: ASK_TIMEOUT * 3, signal },
     ),
@@ -167,4 +191,43 @@ export function search(query, mode, topK, signal) {
       { timeout: ASK_TIMEOUT, signal },
     ),
   )
+}
+
+// --- Query history ---------------------------------------------------
+//
+// History lives on the server, so a question asked yesterday can still be
+// reopened with the citations and trace it originally produced.
+
+export function listHistory({ limit = 50, offset = 0, mode, answered } = {}) {
+  return call(() =>
+    client.get('/history', {
+      params: { limit, offset, mode, answered },
+    }),
+  )
+}
+
+export function getHistoryRun(id) {
+  return call(() => client.get(`/history/${id}`))
+}
+
+export function deleteHistoryRun(id) {
+  return call(() => client.delete(`/history/${id}`))
+}
+
+export function clearHistory() {
+  return call(() => client.delete('/history'))
+}
+
+// --- Settings and prompts --------------------------------------------
+
+export function listSettings() {
+  return call(() => client.get('/settings'))
+}
+
+export function updateSetting(key, value) {
+  return call(() => client.put(`/settings/${key}`, { value }))
+}
+
+export function listPrompts() {
+  return call(() => client.get('/prompts'))
 }

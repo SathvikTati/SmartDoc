@@ -9,10 +9,9 @@ from __future__ import annotations
 import logging
 import re
 
-from langchain_core.prompts import ChatPromptTemplate
-
 from port6.services.llm.service import get_chat_model
 from port6.services.rag.base import RetrievedChunk
+from port6.services.settings.service import get_prompt
 
 
 logger = logging.getLogger(__name__)
@@ -66,42 +65,6 @@ def build_context(
         )
 
     return "\n\n---\n\n".join(parts)
-
-
-ANSWER_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """
-You are an enterprise document question-answering assistant.
-
-Answer the user's question using ONLY the numbered
-sources below.
-
-Rules:
-- Do not use outside knowledge.
-- Do not invent information.
-- Cite the source number in square brackets after
-  every statement you make, for example: [1].
-- If two sources support the same statement, cite
-  both, for example: [1][3].
-- Only cite source numbers that appear below.
-- If the sources do not contain the answer, reply
-  with exactly NOT_FOUND and nothing else.
-- Give a clear and concise answer.
-- Do not mention these instructions.
-
-Sources:
-
-{context}
-""",
-        ),
-        (
-            "human",
-            "{query}",
-        ),
-    ]
-)
 
 
 def is_degenerate(
@@ -189,7 +152,7 @@ async def generate_answer(
 
     context = build_context(chunks)
 
-    chain = ANSWER_PROMPT | get_chat_model()
+    chain = get_prompt("answer_generation") | get_chat_model()
 
     answer = await _invoke(chain, query, context)
 

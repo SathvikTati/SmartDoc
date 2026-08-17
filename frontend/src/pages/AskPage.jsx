@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   CornerDownLeft,
@@ -19,7 +19,14 @@ import { EmptyState, ErrorState, SkeletonBlock } from '@/components/ui/States'
 import { InvestigationView } from '@/components/rag/InvestigationView'
 import { QueryControls } from '@/components/rag/QueryControls'
 import * as api from '@/lib/api'
-import { cn, formatLatency, formatRelative, truncate } from '@/lib/format'
+import { FileIcon } from '@/components/FileIcon'
+import {
+  cn,
+  formatCount,
+  formatLatency,
+  formatRelative,
+  truncate,
+} from '@/lib/format'
 import { useDocuments } from '@/state/DocumentsContext'
 import { useInvestigations } from '@/state/InvestigationsContext'
 
@@ -32,8 +39,18 @@ const EXAMPLES = [
 export function AskPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { documents, loading: documentsLoading } = useDocuments()
-  const { investigations, current, add, open, startNew, remove } =
-    useInvestigations()
+  const {
+    runs,
+    total,
+    loading: historyLoading,
+    opening,
+    current,
+    showResult,
+    open,
+    startNew,
+    remove,
+    error: historyError,
+  } = useInvestigations()
 
   const [question, setQuestion] = useState('')
   const [mode, setMode] = useState('hybrid')
@@ -44,8 +61,24 @@ export function AskPage() {
   const abortRef = useRef(null)
   const inputRef = useRef(null)
 
-  // Arriving from a document's "Ask about this document" action.
-  const scopedTo = searchParams.get('document')
+  // Arriving from a document's "Ask about…" action. `docs` is a hard
+  // scope: retrieval cannot reach outside it in any mode.
+  const scopeIds = useMemo(
+    () => (searchParams.get('docs') ?? '').split(',').filter(Boolean),
+    [searchParams],
+  )
+
+  const scopedDocuments = useMemo(
+    () => documents.filter((document) => scopeIds.includes(document.id)),
+    [documents, scopeIds],
+  )
+
+  function dropFromScope(id) {
+    const remaining = scopeIds.filter((value) => value !== id)
+    setSearchParams(remaining.length ? { docs: remaining.join(',') } : {}, {
+      replace: true,
+    })
+  }
 
   const readyCount = documents.filter(
     (document) => document.status === 'READY',
@@ -67,8 +100,23 @@ export function AskPage() {
     setError(null)
 
     try {
-      const result = await api.ask(trimmed, mode, topK, controller.signal)
-      add({ question: trimmed, mode, topK, result })
+      const result = await api.ask(
+        trimmed,
+        mode,
+        topK,
+        scopeIds,
+        controller.signal,
+      )
+
+      showResult({
+        id: result.metadata?.run_id ?? `local-${Date.now()}`,
+        question: trimmed,
+        mode,
+        topK,
+        result,
+        askedAt: new Date().toISOString(),
+      })
+
       setQuestion('')
     } catch (caught) {
       if (controller.signal.aborted) return
@@ -88,22 +136,56 @@ export function AskPage() {
 
   const composer = (
     <div className="space-y-3">
-      {scopedTo && (
-        <div className="flex items-start gap-2 rounded-md border border-line bg-raised/60 px-3 py-2">
-          <FileSearch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-subtle" />
-          <p className="min-w-0 flex-1 text-xs text-ink-muted">
-            Starting from <span className="font-medium">{scopedTo}</span>.
-            Retrieval always searches the whole library, so naming the document
-            in your question is what steers it there.
+      {scopeIds.length > 0 && (
+        <div className="rounded-md border border-accent/25 bg-accent-soft/50 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <FileSearch className="h-3.5 w-3.5 shrink-0 text-accent" />
+            <p className="min-w-0 flex-1 text-xs font-medium text-ink">
+              Scoped to {formatCount(scopeIds.length, 'document')}
+            </p>
+            <button
+              type="button"
+              onClick={() => setSearchParams({}, { replace: true })}
+              className="rounded text-xs text-ink-muted transition-colors hover:text-ink"
+            >
+              Search everything
+            </button>
+          </div>
+
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {scopedDocuments.map((document) => (
+              <span
+                key={document.id}
+                className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-2xs"
+              >
+                <FileIcon filename={document.filename} className="h-3 w-3" />
+                <span className="max-w-[180px] truncate">
+                  {document.filename}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${document.filename} from the scope`}
+                  onClick={() => dropFromScope(document.id)}
+                  className="rounded text-ink-subtle hover:text-ink"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </span>
+            ))}
+
+            {/* A scoped id with no matching document means it was deleted
+                since the link was made. */}
+            {scopeIds.length > scopedDocuments.length && (
+              <span className="text-2xs text-ink-subtle">
+                {scopeIds.length - scopedDocuments.length} no longer in the
+                library
+              </span>
+            )}
+          </div>
+
+          <p className="mt-1.5 text-2xs text-ink-subtle">
+            Nothing outside this list can be retrieved or cited.
           </p>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={() => setSearchParams({}, { replace: true })}
-            className="rounded text-ink-subtle hover:text-ink"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
         </div>
       )}
 
@@ -161,7 +243,7 @@ export function AskPage() {
         </div>
       )}
 
-      {!current && readyCount > 0 && investigations.length === 0 && (
+      {!current && readyCount > 0 && runs.length === 0 && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
           <span className="text-xs text-ink-subtle">Try:</span>
           {EXAMPLES.map((example) => (
@@ -217,6 +299,20 @@ export function AskPage() {
           />
         )}
 
+        {historyError && (
+          <ErrorState
+            title="History unavailable"
+            message={historyError}
+            className="mb-5"
+          />
+        )}
+
+        {opening && (
+          <Panel className="mb-5 p-4">
+            <SkeletonBlock lines={3} />
+          </Panel>
+        )}
+
         {running && !current && (
           <Panel className="mb-5 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm text-ink-muted">
@@ -243,15 +339,19 @@ export function AskPage() {
         )}
 
         {/* Recent investigations */}
-        {investigations.length > 0 && (
+        {runs.length > 0 && (
           <div className="mt-10">
             <SectionHeading
               title="Recent investigations"
-              meta={`${investigations.length} this session`}
+              meta={
+                total > runs.length
+                  ? `${runs.length} of ${total}`
+                  : `${total} saved`
+              }
             />
 
             <Panel className="divide-y divide-line">
-              {investigations.map((investigation) => {
+              {runs.map((investigation) => {
                 const active = investigation.id === current?.id
 
                 return (
@@ -264,7 +364,7 @@ export function AskPage() {
                   >
                     <button
                       type="button"
-                      onClick={() => open(investigation.id)}
+                      onClick={() => void open(investigation.id)}
                       className="min-w-0 flex-1 rounded text-left"
                     >
                       <p
@@ -279,30 +379,28 @@ export function AskPage() {
                         <span className="capitalize">{investigation.mode}</span>
                         <span>·</span>
                         <span className="tnum">
-                          {investigation.result.citations.length} source
-                          {investigation.result.citations.length === 1 ? '' : 's'}
+                          {investigation.citation_count} source
+                          {investigation.citation_count === 1 ? '' : 's'}
                         </span>
                         <span>·</span>
                         <span className="tnum">
-                          {formatLatency(investigation.result.latency_ms)}
+                          {formatLatency(investigation.latency_ms)}
                         </span>
                         <span>·</span>
                         <span>
-                          {formatRelative(
-                            new Date(investigation.askedAt).toISOString(),
-                          )}
+                          {formatRelative(investigation.created_at)}
                         </span>
                       </p>
                     </button>
 
-                    {!investigation.result.answered && (
+                    {!investigation.answered && (
                       <Badge tone="warn">Unanswered</Badge>
                     )}
 
                     <button
                       type="button"
                       aria-label="Remove investigation"
-                      onClick={() => remove(investigation.id)}
+                      onClick={() => void remove(investigation.id)}
                       className="rounded p-1 text-ink-subtle opacity-0 transition-opacity hover:bg-raised hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -323,11 +421,11 @@ export function AskPage() {
           </div>
         )}
 
-        {!current && !running && investigations.length === 0 && readyCount > 0 && (
+        {!current && !running && !historyLoading && runs.length === 0 && readyCount > 0 && (
           <EmptyState
             icon={MessageSquareText}
             title="No investigations yet"
-            description="Answers, their citations and the full retrieval trace will appear here."
+            description="Answers, their citations and the full retrieval trace are saved here and survive a refresh."
             className="mt-4"
           />
         )}

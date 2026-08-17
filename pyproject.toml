@@ -37,6 +37,18 @@ dependencies = [
 [project.scripts]
 port6 = "port6:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Every async test is a coroutine test; no per-test marker needed.
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

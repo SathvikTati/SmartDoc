@@ -77,6 +77,11 @@ Blocks are grouped into a section tree by their heading levels. Each section kno
 
 Chunks are then cut **inside each section separately**, never across section boundaries, so one chunk cannot contain the tail of the annual leave section and the head of the probation section.
 
+Each chunk carries the page of the block it actually starts in, recovered
+from the splitter's start offset. Stamping every chunk with the section's
+*first* page meant a section spanning pages 4–7 cited all of its content as
+page 4.
+
 Every chunk is stamped with:
 
 ```
@@ -96,10 +101,20 @@ Existing chunks for the document are deleted first (re-ingestion can produce few
 
 > Writing to `_collection.upsert()` directly would make Chroma silently embed with its own default model and store the wrong vector dimension.
 
-**5. Summary** — one LLM call per document, best-effort. A model failure
-logs a warning and leaves `summary` null; the document still reaches `READY`
-and stays queryable, though see the note on stage 1 below — the summary is
-what makes a document findable *as a document*.
+**5. Summary** — one LLM call for a short document; a longer one is
+summarised in windows that span its whole length and the parts combined,
+because summarising only the opening made the largest documents the hardest
+to find at stage 1.
+
+Best-effort: a model failure logs a warning, leaves `summary` null, and the
+document still reaches `READY` — but it is flagged on `/documents/attention`
+and can be reprocessed, because a document with no summary is much weaker at
+stage 1.
+
+**Failure is recoverable.** The uploaded file is never deleted, so a
+document that failed on a stopped Ollama or an expired key keeps its bytes.
+`documents.attempts`, `last_attempt_at` and `failure_kind` record what
+happened, and `POST /documents/{id}/reprocess` runs it again.
 
 ---
 
@@ -153,8 +168,9 @@ flowchart TD
 **Hierarchical narrowing is genuinely progressive.** Stage 1 ranks
 *documents* using BM25 over their filenames and summaries in Postgres — the
 chunk index is never touched. The summary is effectively the whole signal
-there: a filename is two or three tokens, so a document that failed to
-summarise scores 0 against most queries and can only be reached by stage 3. Stage 2 searches for sections
+there: a filename is two or three tokens. A document with no summary falls
+back to the opening of its content, so it stays rankable rather than
+dropping out of document-level retrieval entirely. Stage 2 searches for sections
 only within those documents. Stage 3 retrieves chunks only within those
 sections.
 
@@ -195,7 +211,20 @@ stateDiagram-v2
 
 **Planning** is done by the model on the first attempt (given the tool catalogue, it returns JSON `{"tools": [...], "reason": "..."}`), falling back to rules if the model returns anything unusable. The **retry always uses rules** — it is a deliberate widening to a full hybrid sweep, not a re-plan.
 
-**Evidence validation** runs before the answer. A cheap lexical check first (share of the question's meaningful terms present in the retrieved text); if that passes, the model judges `SUFFICIENT` / `INSUFFICIENT`. If the validator itself errors it falls back to the lexical signal — a validator that cannot run must not block an answer.
+**Evidence validation** runs before the answer, in three bands. Below
+`validation.min_overlap` the evidence is rejected outright; above
+`validation.skip_model_above` it is accepted without asking the model, because
+a small model reliably calls plainly good sources insufficient and each false
+negative costs a full retry that changes nothing. Only in between does the
+model judge `SUFFICIENT` / `INSUFFICIENT`. If the validator errors it falls
+back to the lexical signal — a validator that cannot run must not block an
+answer.
+
+**Tool results are fused by rank, not by score.** A Chroma distance is better
+when lower and a BM25 score when higher, so sorting the two together ranked a
+keyword-only plan backwards and answered from the *worst* matches it found.
+Each tool returns its own best-first ordering, and RRF over those positions is
+what the context builder sorts on.
 
 Bounded by `MAX_ATTEMPTS = 2`, so an unanswerable question still terminates. If evidence is still thin and nothing was retrieved, the agent **declines** rather than generating.
 

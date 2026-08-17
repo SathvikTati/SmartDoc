@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  AlertTriangle,
   FolderOpen,
   LayoutGrid,
   List,
   MessageSquareText,
+  PanelRight,
   RefreshCw,
+  RotateCcw,
   Search,
   SearchX,
   Trash2,
@@ -19,11 +22,14 @@ import { Input, Select } from '@/components/ui/Field'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 import { ContextMenu, useContextMenu } from '@/components/ui/ContextMenu'
 import { DetailsView, IconsView } from '@/components/files/FileViews'
+import { PreviewPane } from '@/components/files/PreviewPane'
 import { UploadDialog } from '@/components/files/UploadDialog'
 import { useDocuments } from '@/state/DocumentsContext'
+import * as api from '@/lib/api'
 import { cn, fileKindLabel, formatBytes, formatCount } from '@/lib/format'
 
 const VIEW_STORAGE_KEY = 'port6.files.view'
+const PREVIEW_STORAGE_KEY = 'port6.files.preview'
 
 const STATUS_FILTERS = [
   { value: 'all', label: 'All statuses' },
@@ -72,6 +78,10 @@ export function FilesPage() {
   const [uploadOpen, setUploadOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [actionError, setActionError] = useState(null)
+  const [reprocessing, setReprocessing] = useState(null)
+  const [previewOpen, setPreviewOpen] = useState(
+    () => readSetting(PREVIEW_STORAGE_KEY, 'true') === 'true',
+  )
 
   const { menu, openAt, close: closeMenu } = useContextMenu()
   // Anchor for shift-click range selection.
@@ -170,6 +180,42 @@ export function FilesPage() {
     [navigate],
   )
 
+  // The pane shows a single selection; with several selected there is no
+  // one document to describe.
+  const previewed =
+    selectedIds.size === 1
+      ? documents.find((document) => selectedIds.has(document.id)) ?? null
+      : null
+
+  const reprocess = useCallback(
+    async (document) => {
+      setReprocessing(document.id)
+      setActionError(null)
+
+      try {
+        await api.reprocessDocument(document.id)
+        await refresh()
+      } catch (caught) {
+        setActionError(caught?.message ?? 'Could not reprocess')
+      } finally {
+        setReprocessing(null)
+      }
+    },
+    [refresh],
+  )
+
+  // Documents that failed, or indexed without a summary. Surfaced as a
+  // banner because a quiet FAILED row is easy to scroll past.
+  const needsAttention = useMemo(
+    () =>
+      documents.filter(
+        (document) =>
+          document.status === 'FAILED' ||
+          (document.status === 'READY' && !document.summary),
+      ),
+    [documents],
+  )
+
   const deleteSelected = useCallback(async () => {
     const ids = [...selectedIds]
     if (!ids.length) return
@@ -226,6 +272,14 @@ export function FilesPage() {
     [visible],
   )
 
+  const selectedBytes = useMemo(
+    () =>
+      documents
+        .filter((document) => selectedIds.has(document.id))
+        .reduce((total, document) => total + (document.size_bytes ?? 0), 0),
+    [documents, selectedIds],
+  )
+
   const menuItems = useMemo(() => {
     const document = menu?.target
 
@@ -245,14 +299,36 @@ export function FilesPage() {
       ]
     }
 
+    const recoverable =
+      document.status === 'FAILED' ||
+      (document.status === 'READY' && !document.summary)
+
     return [
       { label: 'Open', icon: FolderOpen, onSelect: () => openDocument(document) },
       {
-        label: 'Ask about this document',
+        // Scope to the whole selection when there is one, not just the
+        // row that was right-clicked.
+        label:
+          selectedIds.size > 1
+            ? `Ask about these ${selectedIds.size} documents`
+            : 'Ask about this document',
         icon: MessageSquareText,
-        onSelect: () =>
-          navigate(`/ask?document=${encodeURIComponent(document.filename)}`),
+        onSelect: () => {
+          const scope = selectedIds.has(document.id)
+            ? [...selectedIds]
+            : [document.id]
+          navigate(`/ask?docs=${scope.join(',')}`)
+        },
       },
+      ...(recoverable
+        ? [
+            {
+              label: 'Reprocess',
+              icon: RotateCcw,
+              onSelect: () => void reprocess(document),
+            },
+          ]
+        : []),
       { separator: true },
       {
         label:
@@ -262,7 +338,16 @@ export function FilesPage() {
         onSelect: () => void deleteSelected(),
       },
     ]
-  }, [menu, visible, openDocument, navigate, deleteSelected, selectedIds, refresh])
+  }, [
+    menu,
+    visible,
+    openDocument,
+    navigate,
+    deleteSelected,
+    selectedIds,
+    refresh,
+    reprocess,
+  ])
 
   const emptyLibrary = !loading && documents.length === 0
 
@@ -342,7 +427,27 @@ export function FilesPage() {
             </Button>
           )}
 
-          <div className="ml-auto flex rounded border border-line bg-raised p-0.5">
+          <button
+            type="button"
+            title="Toggle preview pane"
+            aria-label="Toggle preview pane"
+            aria-pressed={previewOpen}
+            onClick={() => {
+              const next = !previewOpen
+              setPreviewOpen(next)
+              writeSetting(PREVIEW_STORAGE_KEY, String(next))
+            }}
+            className={cn(
+              'ml-auto hidden rounded border p-1.5 transition-colors lg:block',
+              previewOpen
+                ? 'border-line-strong bg-raised text-ink'
+                : 'border-line text-ink-subtle hover:text-ink',
+            )}
+          >
+            <PanelRight className="h-3.5 w-3.5" />
+          </button>
+
+          <div className="flex rounded border border-line bg-raised p-0.5">
             {[
               { value: 'details', icon: List, label: 'Details view' },
               { value: 'icons', icon: LayoutGrid, label: 'Icon view' },
@@ -377,7 +482,42 @@ export function FilesPage() {
           </div>
         )}
 
-        {/* File list */}
+        {needsAttention.length > 0 && (
+          <div className="flex shrink-0 items-center gap-2.5 border-b border-warn/25 bg-warn-soft px-3 py-2">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" />
+            <p className="min-w-0 flex-1 text-xs text-ink-muted">
+              <span className="font-medium text-ink">
+                {formatCount(needsAttention.length, 'document')}
+              </span>{' '}
+              did not fully ingest. The uploaded files were kept, so they can
+              be reprocessed once the cause is fixed.
+            </p>
+            <Button
+              size="sm"
+              loading={reprocessing === 'all'}
+              onClick={async () => {
+                setReprocessing('all')
+                setActionError(null)
+                try {
+                  for (const document of needsAttention) {
+                    await api.reprocessDocument(document.id)
+                  }
+                  await refresh()
+                } catch (caught) {
+                  setActionError(caught?.message ?? 'Could not reprocess')
+                } finally {
+                  setReprocessing(null)
+                }
+              }}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reprocess all
+            </Button>
+          </div>
+        )}
+
+        {/* File list + preview */}
+        <div className="flex min-h-0 flex-1">
         <div
           onContextMenu={(event) => openAt(event, null)}
           onClick={(event) => {
@@ -433,6 +573,16 @@ export function FilesPage() {
           )}
         </div>
 
+        {previewOpen && (
+          <PreviewPane
+            document={previewed}
+            onClose={() => setPreviewOpen(false)}
+            onReprocess={reprocess}
+            reprocessing={reprocessing === previewed?.id}
+          />
+        )}
+        </div>
+
         {/* Status bar */}
         <div className="flex shrink-0 items-center gap-3 border-t border-line bg-surface px-3 py-1.5 text-2xs text-ink-muted">
           <span className="tnum">
@@ -464,7 +614,13 @@ export function FilesPage() {
                 Ingesting
               </span>
             )}
-            <span className="tnum">{formatBytes(totalBytes)}</span>
+            {/* Labelled, and it follows the selection — an unlabelled
+                figure here reads as a control that does nothing. */}
+            <span className="tnum">
+              {selectedIds.size > 0
+                ? `${formatBytes(selectedBytes)} selected of ${formatBytes(totalBytes)}`
+                : `${formatBytes(totalBytes)} total`}
+            </span>
           </span>
         </div>
       </div>

@@ -1,8 +1,17 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Column, DateTime, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from port6.services.db.database import Base
 
@@ -73,4 +82,225 @@ class Document(Base):
     error_message = Column(
         Text,
         nullable=True,
+    )
+
+    # -------------------------------------------------------------
+    # Ingestion attempts
+    #
+    # A FAILED document is not a dead end: the file is still on disk, so
+    # it can be reprocessed once whatever broke is fixed. These record
+    # how many tries it has had and what went wrong last time.
+    # -------------------------------------------------------------
+
+    attempts = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
+    last_attempt_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    # Why it failed, coarsely: "provider" (the model or its key), "parse",
+    # "storage", or "unknown". Drives whether retrying is worth offering.
+    failure_kind = Column(
+        String(32),
+        nullable=True,
+    )
+
+
+class Setting(Base):
+    """A runtime-tunable value, editable without a redeploy.
+
+    Only settings that genuinely change behaviour at request time live
+    here. Deploy-time facts (upload limits, the Chroma path) stay in
+    config.yaml, and everything about which model to call stays in .env —
+    a provider switch is not a runtime tweak.
+
+    Values are stored as JSON so a setting can be a number, a string, a
+    boolean or null without a column per type.
+    """
+
+    __tablename__ = "settings"
+
+    key = Column(
+        String(80),
+        primary_key=True,
+    )
+
+    value = Column(
+        JSONB,
+        nullable=True,
+    )
+
+    # Shown by GET /settings so a caller knows what a key is for.
+    description = Column(
+        Text,
+        nullable=True,
+    )
+
+    # The code default, kept so a setting can be reverted without
+    # remembering what it used to be.
+    default_value = Column(
+        JSONB,
+        nullable=True,
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+
+class Prompt(Base):
+    """An LLM prompt, stored so it can be changed without a redeploy.
+
+    `system` and `human` mirror the two turns every prompt in this system
+    uses. `variables` records the placeholders the template must contain,
+    which is what stops a malformed edit from breaking a pipeline at the
+    worst possible moment.
+    """
+
+    __tablename__ = "prompts"
+
+    name = Column(
+        String(80),
+        primary_key=True,
+    )
+
+    system = Column(
+        Text,
+        nullable=False,
+    )
+
+    human = Column(
+        Text,
+        nullable=False,
+    )
+
+    description = Column(
+        Text,
+        nullable=True,
+    )
+
+    variables = Column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+
+    # Bumped on every edit, and recorded on each query so an answer can be
+    # traced back to the exact prompt that produced it.
+    version = Column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+
+    # The shipped text, so an edit can always be reverted.
+    default_system = Column(
+        Text,
+        nullable=False,
+    )
+
+    default_human = Column(
+        Text,
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+
+class QueryRun(Base):
+    """One question and everything the system did to answer it.
+
+    Persisted rather than held in the browser so a question asked
+    yesterday can still be opened, and so retrieval behaviour can be
+    reviewed over time instead of only in the moment.
+    """
+
+    __tablename__ = "query_runs"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    question = Column(
+        Text,
+        nullable=False,
+    )
+
+    mode = Column(
+        String(20),
+        nullable=False,
+    )
+
+    top_k = Column(
+        Integer,
+        nullable=False,
+    )
+
+    answer = Column(
+        Text,
+        nullable=False,
+    )
+
+    answered = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    citation_count = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    chunk_count = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    latency_ms = Column(
+        Float,
+        nullable=True,
+    )
+
+    retrieval_method = Column(
+        Text,
+        nullable=True,
+    )
+
+    # The full RagResult payload, so reopening a run shows exactly what was
+    # shown the first time — citations, evidence and the retrieval trace.
+    result = Column(
+        JSONB,
+        nullable=False,
+    )
+
+    # Which prompt versions were live for this run.
+    prompt_versions = Column(
+        JSONB,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
     )

@@ -24,6 +24,8 @@ port6/
         ├── rag/                the three retrieval modes
         ├── documents/          document CRUD
         ├── retrieval/          raw retrieval for /search (semantic|keyword|hybrid)
+        ├── settings/           DB-backed prompts and runtime tuning
+        ├── history/            persisted query runs
         ├── db/                 SQLAlchemy engine and session
         ├── model/              ORM model
         └── schemas/            Pydantic request/response models
@@ -68,6 +70,11 @@ The Streamlit app below is retained as an internal debugging surface.
 | [`chunking/service.py`](src/port6/services/chunking/service.py) | 154 | Splits **within each section**, so a chunk never straddles two unrelated parts of a policy. Stamps the section hierarchy onto every chunk and drops `None` values that Chroma would reject. |
 | [`ingestion/service.py`](src/port6/services/ingestion/service.py) | ~330 | `process_document()` — the background pipeline: PROCESSING → chunks → embed → summarise → READY, with FAILED on error. Synchronous on purpose so FastAPI runs it in a worker thread instead of on the event loop. |
 
+| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 250 | The shipped value for every setting and prompt. Seeded into the database on startup, insert-only, so an edit survives a restart. |
+| [`settings/service.py`](src/port6/services/settings/service.py) | 430 | Reads and writes them, cached in process and invalidated on write. `_check_variables` rejects a prompt edit that drops a placeholder the pipeline supplies — that failure would otherwise surface as a confidently wrong answer. |
+| [`history/service.py`](src/port6/services/history/service.py) | 190 | Records each answered question with its full result, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
+| [`llm/errors.py`](src/port6/services/llm/errors.py) | 215 | Classifies a failure as provider / parse / storage / unknown, by exception name and message rather than by importing provider SDKs. Turns "processing failed" into "your API key expired", and says whether retrying will help. |
+
 ---
 
 ## Retrieval — the three modes
@@ -79,7 +86,7 @@ The Streamlit app below is retained as an internal debugging surface.
 | [`rag/retrievers.py`](src/port6/services/rag/retrievers.py) | 358 | The primitives. `semantic_search()` (Chroma, optional `where`), `KeywordIndex` (BM25 built from stored chunks, cached and rebuilt when the collection size changes, thread-safe), and `fuse()` — Reciprocal Rank Fusion. |
 | [`rag/hierarchical.py`](src/port6/services/rag/hierarchical.py) | 325 | Progressive narrowing. `select_documents()` ranks documents from Postgres without touching the chunk index; `select_sections()` searches only inside them; `retrieve_in_sections()` retrieves only inside the chosen sections. |
 | [`rag/generation.py`](src/port6/services/rag/generation.py) | 291 | Shared by all modes. Builds numbered sources with document/section/page headers, prompts for `[n]` citations, resolves them back to chunks, drops hallucinated numbers, handles the `NOT_FOUND` sentinel, and retries citation-only answers once. |
-| [`rag/validation.py`](src/port6/services/rag/validation.py) | 190 | Evidence validation. Lexical overlap check first, then a model verdict of `SUFFICIENT` / `INSUFFICIENT`. Falls back to the lexical signal if the validator itself fails. |
+| [`rag/validation.py`](src/port6/services/rag/validation.py) | 187 | Evidence validation in three bands: reject below `validation.min_overlap`, accept above `validation.skip_model_above` without a model call, and ask the model only in between. Falls back to the lexical signal if the validator itself fails. |
 | [`rag/naive.py`](src/port6/services/rag/naive.py) | 82 | **Mode 1.** Vector search → top-k → LLM. Unchanged baseline, kept deliberately limited. |
 | [`rag/hybrid.py`](src/port6/services/rag/hybrid.py) | 183 | **Mode 2.** Runs hierarchical and flat hybrid retrieval, fuses everything with RRF, and reranks so chunks two retrievers agreed on come first. |
 | [`rag/tools.py`](src/port6/services/rag/tools.py) | 228 | The agent's five tools, each an independently testable async callable returning `{"chunks", "info"}`, plus a registry with descriptions the planner reasons over. `document_lookup` returns the catalogue — filenames with clipped summaries — **as a chunk**, since only chunks reach the answer generator. |
@@ -130,6 +137,7 @@ The Streamlit app below is retained as an internal debugging surface.
 | `4535ca6eb9fe` | `document_title`, `document_type`, `document_key`, `version`, `effective_from`, `effective_to`, `lifecycle_status`, `department` + indexes |
 | `cf61a0ac779f` | **drops** `document_key`, `version`, `effective_from`, `effective_to`, `lifecycle_status` (versioning removed) |
 | `a7c4e1b93d02` | **drops** `document_title`, `document_type`, `department` (a file is identified by its filename) |
+| `b8e2f4a10c37` | `settings`, `prompts`, `query_runs` tables; `documents.attempts`, `last_attempt_at`, `failure_kind` |
 
 ---
 
@@ -145,4 +153,7 @@ The Streamlit app below is retained as an internal debugging surface.
 | Support a new file type | `parsers/parser.py` `parsers` dict + `config.yaml` `allowed_types` |
 | Change chunk size | `config.yaml` `chunking` |
 | Add a document field | `model/models.py` + a migration + `schemas/document.py` |
+| Change a prompt | `PUT /prompts/{name}` — or `settings/defaults.py` for a new shipped default |
+| Change a tuning value | `PUT /settings/{key}` — or `settings/defaults.py` to add one |
+| Change which model runs | `.env` only |
 | Swap model provider | `.env` `LLM_PROVIDER` / `EMBEDDINGS_PROVIDER` |

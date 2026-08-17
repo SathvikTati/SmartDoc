@@ -29,18 +29,31 @@ export function ContextMenu({ x, y, items, onClose }) {
   useEffect(() => {
     const close = () => onClose()
 
+    /**
+     * Close on a press *outside* the menu.
+     *
+     * This must ignore presses inside it. Closing on every mousedown
+     * unmounted the menu between the press and the release, so the click
+     * never reached the item and none of the actions could be used at all.
+     */
+    const onPointerDown = (event) => {
+      if (ref.current?.contains(event.target)) return
+      onClose()
+    }
+
     const onKeyDown = (event) => {
       if (event.key === 'Escape') onClose()
     }
 
-    // `capture` so a click that also lands on a row still closes the menu.
-    document.addEventListener('mousedown', close, true)
+    // `capture` so a press that also lands on a row closes the menu before
+    // the row handles it.
+    document.addEventListener('mousedown', onPointerDown, true)
     document.addEventListener('keydown', onKeyDown)
     window.addEventListener('scroll', close, true)
     window.addEventListener('resize', close)
 
     return () => {
-      document.removeEventListener('mousedown', close, true)
+      document.removeEventListener('mousedown', onPointerDown, true)
       document.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('scroll', close, true)
       window.removeEventListener('resize', close)

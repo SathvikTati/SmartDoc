@@ -14,17 +14,18 @@ call per upload to produce a label no part of the system could verify.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from langchain_core.documents import Document as LangChainDocument
-from langchain_core.prompts import ChatPromptTemplate
 
-from port6.config import summary_config
 from port6.services.chunking.service import chunk_document
 from port6.services.db.database import SessionLocal
+from port6.services.llm.errors import describe as describe_failure
 from port6.services.llm.service import get_chat_model
 from port6.services.model.models import Document
 from port6.services.parsers.parser import ParsedBlock, parse
+from port6.services.settings.service import get_int, get_prompt
 from port6.services.vector.chroma import (
     delete_document_chunks,
     store_chunks,
@@ -92,9 +93,17 @@ def set_status(
 
 def mark_failed(
     document_id: str,
-    error_message: str,
-) -> None:
-    """Record a failure without raising if the document has since vanished."""
+    error: Exception,
+) -> dict:
+    """Park a failed document with enough detail to act on it.
+
+    Nothing is deleted: the uploaded file is still on disk, so a document
+    that failed because Ollama was down or a key had expired can be
+    reprocessed once that is fixed. The classified `failure_kind` is what
+    tells the UI whether retrying is worth offering.
+    """
+
+    failure = describe_failure(error)
 
     db = SessionLocal()
 
@@ -110,18 +119,50 @@ def mark_failed(
                 "Cannot mark missing document %s as FAILED",
                 document_id,
             )
-            return
+            return failure
 
         document.status = STATUS_FAILED
-        document.error_message = error_message
+        document.error_message = failure["message"]
+        document.failure_kind = failure["kind"]
 
         db.commit()
 
         logger.error(
-            "Document %s marked as FAILED: %s",
+            "Document %s marked as FAILED (%s/%s): %s",
             document_id,
-            error_message,
+            failure["kind"],
+            failure["reason"],
+            failure["message"],
         )
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+    return failure
+
+
+def record_attempt(
+    document_id: str,
+) -> int:
+    """Count a processing attempt and clear the previous failure."""
+
+    db = SessionLocal()
+
+    try:
+        document = _load_document(db, document_id)
+
+        document.attempts = (document.attempts or 0) + 1
+        document.last_attempt_at = datetime.utcnow()
+        document.error_message = None
+        document.failure_kind = None
+
+        db.commit()
+
+        return document.attempts
 
     except Exception:
         db.rollback()
@@ -216,107 +257,181 @@ def embed_chunks(
     return stored_count
 
 
+def _run_summary_prompt(
+    prompt_name: str,
+    filename: str,
+    content: str,
+    max_words: int,
+) -> str:
+
+    chain = get_prompt(prompt_name) | get_chat_model()
+
+    response = chain.invoke(
+        {
+            "filename": filename,
+            "content": content,
+            "max_words": max_words,
+        }
+    )
+
+    text = response.content
+
+    if not isinstance(text, str):
+        text = str(text)
+
+    return text.strip()
+
+
+def split_for_summary(
+    content: str,
+    window: int,
+    max_parts: int,
+) -> list[str]:
+    """Cut a document into at most `max_parts` windows covering all of it.
+
+    A document longer than `window * max_parts` is sampled evenly across
+    its whole length rather than truncated to the opening: the point of
+    the summary is to describe the document, and stage 1 ranks on it.
+    """
+
+    if len(content) <= window:
+        return [content]
+
+    parts_needed = -(-len(content) // window)
+
+    if parts_needed <= max_parts:
+        return [
+            content[start : start + window]
+            for start in range(0, len(content), window)
+        ]
+
+    # Too long to read whole: take `max_parts` evenly spaced windows so the
+    # sample spans the document instead of clustering at the start.
+    stride = (len(content) - window) // (max_parts - 1)
+
+    return [
+        content[index * stride : index * stride + window]
+        for index in range(max_parts)
+    ]
+
+
 def summarize_document(
     document_id: str,
 ) -> str:
+    """Summarise a document, in one call or several.
+
+    The summary is not decoration: stage 1 of hierarchical retrieval ranks
+    documents on it, so summarising only a long document's opening made
+    the largest files the hardest to find.
+    """
+
+    db = SessionLocal()
+
+    try:
+        document = _load_document(db, document_id)
+        filename = document.filename
+        content = (document.content or "").strip()
+
+    finally:
+        db.close()
+
+    if not content:
+        raise ValueError(
+            f"Document {document_id} has no content to summarise"
+        )
+
+    window = get_int("summary.max_input_characters")
+    max_words = get_int("summary.max_words")
+    max_parts = max(get_int("summary.max_sections"), 1)
+
+    parts = split_for_summary(content, window, max_parts)
+
+    if len(parts) == 1:
+        summary = _run_summary_prompt(
+            "document_summary",
+            filename,
+            parts[0],
+            max_words,
+        )
+
+    else:
+        logger.info(
+            "Document %s is %d characters; summarising in %d parts",
+            document_id,
+            len(content),
+            len(parts),
+        )
+
+        # Each part gets a share of the budget, then the whole is written
+        # to the full length.
+        part_words = max(max_words // len(parts), 40)
+
+        part_summaries = [
+            _run_summary_prompt(
+                "document_summary",
+                filename,
+                part,
+                part_words,
+            )
+            for part in parts
+        ]
+
+        summary = _run_summary_prompt(
+            "document_summary_combine",
+            filename,
+            "\n\n".join(
+                f"Part {index}: {text}"
+                for index, text in enumerate(part_summaries, start=1)
+            ),
+            max_words,
+        )
+
+    db = SessionLocal()
+
+    try:
+        stored = _load_document(db, document_id)
+        stored.summary = summary
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
+
+    logger.info(
+        "Summarised document %s from %d characters in %d call(s)",
+        document_id,
+        len(content),
+        len(parts) + (1 if len(parts) > 1 else 0),
+    )
+
+    return summary
+
+
+def _record_summary_failure(
+    document_id: str,
+    failure: dict,
+) -> None:
+    """Note a missing summary on an otherwise-ready document."""
 
     db = SessionLocal()
 
     try:
         document = _load_document(db, document_id)
 
-        content = (document.content or "").strip()
-
-        if not content:
-            raise ValueError(
-                f"Document {document_id} has no content to summarise"
-            )
-
-        max_characters = int(
-            summary_config.get(
-                "max_input_characters",
-                12000,
-            )
+        document.error_message = (
+            f"Indexed, but not summarised: {failure['message']} "
+            "This document can still be found by chunk, but not ranked "
+            "at the document level. Reprocess to fill the summary in."
         )
-
-        truncated = content[:max_characters]
-
-        if len(content) > max_characters:
-            logger.info(
-                "Document %s truncated from %d to %d characters "
-                "for summarisation",
-                document_id,
-                len(content),
-                max_characters,
-            )
-
-        max_words = int(
-            summary_config.get(
-                "max_words",
-                150,
-            )
-        )
-
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """
-You are a document summarisation assistant.
-
-Summarise the document below in at most
-{max_words} words.
-
-Rules:
-- Use only what the document says.
-- Do not invent information.
-- Write plain prose, no bullet points or headings.
-- Do not mention these instructions.
-
-Document: {filename}
-
-{content}
-""",
-                ),
-                (
-                    "human",
-                    "Summarise this document.",
-                ),
-            ]
-        )
-
-        chain = prompt | get_chat_model()
-
-        response = chain.invoke(
-            {
-                "filename": document.filename,
-                "content": truncated,
-                "max_words": max_words,
-            }
-        )
-
-        summary = response.content
-
-        if not isinstance(summary, str):
-            summary = str(summary)
-
-        summary = summary.strip()
-
-        document.summary = summary
+        document.failure_kind = failure["kind"]
 
         db.commit()
 
-        logger.info(
-            "Summarised document %s (%d characters)",
-            document_id,
-            len(summary),
-        )
-
-        return summary
-
     except Exception:
         db.rollback()
-        raise
 
     finally:
         db.close()
@@ -328,10 +443,13 @@ def process_document(
     """Take one uploaded document all the way to READY.
 
     Any failure marks the document FAILED and stops; the caller is a
-    background task, so there is nobody left to report the error to.
+    background task, so there is nobody left to report the error to. The
+    file stays on disk either way, so `reprocess_document` can pick it up
+    once whatever broke has been fixed.
     """
 
     try:
+        attempt = record_attempt(document_id)
         set_status(document_id, STATUS_PROCESSING)
 
         chunks = build_chunks(document_id)
@@ -343,26 +461,36 @@ def process_document(
 
         # The summary is what stage 1 of hierarchical retrieval ranks
         # documents on — a filename alone is far too few words for BM25 to
-        # separate one document from another. So a document without one is
-        # still searchable by chunk, but much harder to select as a whole.
-        # Best-effort even so: a model failure must not fail an otherwise
-        # ingested document.
+        # separate one document from another. Best-effort even so: a model
+        # failure must not throw away a document that is already chunked
+        # and embedded, and reprocessing will fill the summary in later.
+        summary_failure = None
+
         try:
             summarize_document(document_id)
 
         except Exception as summary_error:
+            summary_failure = describe_failure(summary_error)
+
             logger.warning(
-                "Could not summarise document %s: %s",
+                "Could not summarise document %s (%s): %s",
                 document_id,
-                summary_error,
+                summary_failure["reason"],
+                summary_failure["message"],
             )
 
         set_status(document_id, STATUS_READY)
 
+        if summary_failure is not None:
+            # READY, but flagged: the document is retrievable by chunk and
+            # invisible to document-level ranking, which is worth surfacing
+            # rather than leaving as a silently empty field.
+            _record_summary_failure(document_id, summary_failure)
+
         logger.info(
-            "Document %s processed successfully: "
-            "%d chunks, %d embeddings",
+            "Document %s processed on attempt %d: %d chunks, %d embeddings",
             document_id,
+            attempt,
             len(chunks),
             embedding_count,
         )
@@ -374,7 +502,7 @@ def process_document(
         )
 
         try:
-            mark_failed(document_id, str(exc))
+            mark_failed(document_id, exc)
 
         except Exception:
             logger.exception(
