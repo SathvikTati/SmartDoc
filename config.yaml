@@ -55,9 +55,3 @@ vector:
   provider: chroma
   persist_directory: chroma_data
   collection_name: port6_documents
-
-
-temporal:
-  host: localhost:7233
-  namespace: default
-  task_queue: port6-document-processing

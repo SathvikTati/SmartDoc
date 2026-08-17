@@ -115,10 +115,6 @@ vector_config = config.get(
     {}
 )
 
-temporal_config = config.get(
-    "temporal",
-    {}
-)
 
 
 # -------------------------------------------------------------------

@@ -1,0 +1,135 @@
+import { forwardRef } from 'react'
+import { ChevronDown } from 'lucide-react'
+
+import { cn } from '@/lib/format'
+
+const CONTROL =
+  'w-full rounded border border-line bg-surface text-sm text-ink ' +
+  'placeholder:text-ink-subtle transition-colors ' +
+  'hover:border-line-strong focus:border-accent ' +
+  'disabled:opacity-60 disabled:pointer-events-none'
+
+export function Label({ htmlFor, children, className }) {
+  return (
+    <label
+      htmlFor={htmlFor}
+      className={cn(
+        'block text-2xs font-medium uppercase tracking-wide text-ink-subtle',
+        className,
+      )}
+    >
+      {children}
+    </label>
+  )
+}
+
+export const Input = forwardRef(function Input(
+  { icon, trailing, className, ...props },
+  ref,
+) {
+  return (
+    <div className="relative flex items-center">
+      {icon && (
+        <span className="pointer-events-none absolute left-2.5 flex text-ink-subtle">
+          {icon}
+        </span>
+      )}
+      <input
+        ref={ref}
+        className={cn(
+          CONTROL,
+          'h-8 px-2.5',
+          icon && 'pl-8',
+          trailing && 'pr-8',
+          className,
+        )}
+        {...props}
+      />
+      {trailing && (
+        <span className="absolute right-2.5 flex text-ink-subtle">
+          {trailing}
+        </span>
+      )}
+    </div>
+  )
+})
+
+export const Textarea = forwardRef(function Textarea(
+  { className, ...props },
+  ref,
+) {
+  return (
+    <textarea
+      ref={ref}
+      className={cn(CONTROL, 'resize-y px-2.5 py-2 leading-6', className)}
+      {...props}
+    />
+  )
+})
+
+export const Select = forwardRef(function Select(
+  { options, className, ...props },
+  ref,
+) {
+  return (
+    <div className="relative flex items-center">
+      <select
+        ref={ref}
+        className={cn(CONTROL, 'h-8 appearance-none pl-2.5 pr-7', className)}
+        {...props}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-ink-subtle" />
+    </div>
+  )
+})
+
+/**
+ * Radio group styled as a segmented control. Kept as real radios so arrow
+ * keys move between options and screen readers announce the group.
+ */
+export function SegmentedControl({ name, value, options, onChange, className }) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={name}
+      className={cn(
+        'inline-flex rounded border border-line bg-raised p-0.5',
+        className,
+      )}
+    >
+      {options.map((option) => {
+        const selected = option.value === value
+
+        return (
+          <label
+            key={option.value}
+            title={option.hint}
+            className={cn(
+              'cursor-pointer rounded px-2.5 py-1 text-xs font-medium',
+              'transition-colors select-none',
+              selected
+                ? 'bg-surface text-ink shadow-panel'
+                : 'text-ink-muted hover:text-ink',
+            )}
+          >
+            <input
+              type="radio"
+              name={name}
+              value={option.value}
+              checked={selected}
+              onChange={() => onChange(option.value)}
+              className="sr-only"
+            />
+            {option.label}
+          </label>
+        )
+      })}
+    </div>
+  )
+}

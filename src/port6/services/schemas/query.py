@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from port6.services.rag.base import RagMode, RagResult
+
 
 class AskRequest(BaseModel):
     question: str = Field(
@@ -13,26 +15,33 @@ class AskRequest(BaseModel):
         le=20,
     )
 
-
-class QueryInput(BaseModel):
-    query: str
-    top_k: int = 5
-
-
-class Citation(BaseModel):
-    """A source the model actually referenced, by its [n] marker."""
-
-    number: int
-    document_id: str
-    filename: str
-    chunk_index: int
-    content: str
-    score: float | None = None
+    mode: RagMode = Field(
+        default=RagMode.NAIVE,
+        description=(
+            "Retrieval strategy: naive (vector only), "
+            "hybrid (semantic + BM25 + hierarchical + version aware), "
+            "or agentic (LangGraph tool-planning agent)."
+        ),
+    )
 
 
-class AskResponse(BaseModel):
+class CompareRequest(BaseModel):
+    question: str = Field(
+        min_length=1,
+        max_length=1000,
+    )
+
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+    )
+
+    modes: list[RagMode] = Field(
+        default_factory=lambda: list(RagMode),
+    )
+
+
+class CompareResponse(BaseModel):
     question: str
-    answer: str
-    answered: bool
-    citations: list[Citation]
-    sources: list[Citation]
+    results: dict[str, RagResult]

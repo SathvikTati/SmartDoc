@@ -5,7 +5,15 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from port6.services.model.models import Document
-from port6.services.vector.chroma import delete_document_chunks
+from port6.services.schemas.document import (
+    DocumentSection,
+    DocumentStructureResponse,
+)
+from port6.services.structure.service import build_sections
+from port6.services.vector.chroma import (
+    count_document_chunks,
+    delete_document_chunks,
+)
 
 
 def get_documents(db: Session) -> list[Document]:
@@ -47,6 +55,60 @@ def get_document_summary(
     document_id: UUID,
 ) -> Document:
     return get_document(db, document_id)
+
+
+def get_document_structure(
+    db: Session,
+    document_id: UUID,
+) -> DocumentStructureResponse:
+    """The document's heading tree, plus how much of it was indexed.
+
+    Only the plain text is kept in Postgres, so the headings have to be
+    recovered by re-parsing the stored file — the same thing ingestion does.
+    If that file is gone the document is still perfectly queryable, so this
+    reports `structure_available: false` rather than failing.
+    """
+
+    # Imported here rather than at module scope: this is the only caller,
+    # and it keeps the documents service from pulling in the whole
+    # ingestion pipeline just to list documents.
+    from port6.services.ingestion.service import load_blocks
+
+    document = get_document(db, document_id)
+
+    blocks = load_blocks(document)
+
+    sections = [
+        DocumentSection(
+            section_id=section.section_id,
+            title=section.title,
+            level=section.level,
+            parent_section_id=section.parent_section_id,
+            path=section.path,
+            has_content=bool(section.blocks),
+            character_count=len(section.text),
+            page_start=section.page_start,
+            page_end=section.page_end,
+        )
+        for section in build_sections(blocks)
+    ]
+
+    pages = [
+        block.page_number
+        for block in blocks
+        if block.page_number is not None
+    ]
+
+    return DocumentStructureResponse(
+        id=document.id,
+        filename=document.filename,
+        status=document.status,
+        chunk_count=count_document_chunks(str(document.id)),
+        page_count=max(pages) if pages else None,
+        character_count=len(document.content or ""),
+        sections=sections,
+        structure_available=bool(blocks),
+    )
 
 
 def delete_document(

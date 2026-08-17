@@ -2,54 +2,201 @@
 
 PORT-6 is a document ingestion and processing backend built with FastAPI.
 
-The project is designed to accept multiple document formats, validate uploaded files, detect duplicate documents, extract their content, and persist document metadata in PostgreSQL.
+The project is designed to accept multiple document formats, validate uploaded files, detect duplicate documents, extract their content, and persist it in PostgreSQL. A document is identified by its filename — nothing tries to classify it further.
 
 The system is being built as a foundation for a future document intelligence / LLM processing pipeline.
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [WORKFLOW.md](WORKFLOW.md) | How data flows: the ingestion pipeline and all three query pipelines, stage by stage |
+| [CODEBASE.md](CODEBASE.md) | What every file is and does, plus where to change things |
+| [WALKTHROUGH.md](WALKTHROUGH.md) | One document and one question traced end to end, with real observed values |
+| [demo/README.md](demo/README.md) | Runnable demo: 6-document corpus, 6 scenarios, and what each shows |
+| [frontend/README.md](frontend/README.md) | The React frontend: routes, structure, and how it maps onto the API |
+
+---
+
+## Running It
+
+Two processes:
+
+```bash
+# 1. API (also runs ingestion in background threads)
+uv run uvicorn port6.main:app --reload
+
+# 2. Frontend
+cd frontend && npm install && npm run dev
+```
+
+The UI opens on http://localhost:5173, which lands on **Ask**. It talks to
+the API over HTTP; in development `/api/*` is proxied to
+`http://localhost:8000`, and you can point that elsewhere with
+`PORT6_API_URL`.
+
+A production build talks to the API directly, so the origin must be in the
+API's CORS allowlist:
+
+```bash
+PORT6_CORS_ORIGINS=https://port6.internal uv run uvicorn port6.main:app
+VITE_API_URL=https://port6.example npm --prefix frontend run build
+```
+
+Neither process has authentication, so keep both on localhost or behind
+something that does.
+
+### The React frontend
+
+Plain JavaScript — React 19, Vite, Tailwind, React Router. No TypeScript.
+
+- **Ask** (the home page) — cited answers. Every question is an independent
+  investigation with its own answer, sources, evidence panel and retrieval
+  trace; past questions are listed rather than stacked into a chat transcript.
+- **Files** — the document library as a desktop-style file manager: every
+  document in one flat list, details and icon views, range and multi-select,
+  right-click menus, keyboard shortcuts, sorting, filtering, and
+  drag-and-drop upload. No folders — PORT-6 stores documents flat, so any
+  folder here would have been invented.
+- **Files → document** — file facts, generated summary, chunk and page counts,
+  and the heading tree recovered from the file.
+- **Search** — raw chunk retrieval with no model involved, in semantic,
+  keyword or hybrid mode, showing which retriever found what and at what rank.
+- **Compare** — the same question through all three modes, with a metric
+  table, the three answers, and each mode's trace.
+
+### Streamlit (internal)
+
+The original Streamlit UI is still there for debugging:
+
+```bash
+uv run streamlit run src/port6/frontend/app.py --server.address localhost
+```
+
+---
+
+## Retrieval Modes
+
+The same question can be answered by three progressively more capable
+retrieval strategies. They share ingestion, embeddings, vector store, prompt
+and citation handling, so the only thing that differs is retrieval.
+
+```python
+from port6.services.rag.system import query
+
+result = await query(
+    "How much annual leave do employees get?",
+    mode="naive",   # naive | hybrid | agentic
+    top_k=5,
+)
+```
+
+Every mode returns the same `RagResult`: `answer`, `answered`, `citations`,
+`retrieved_chunks`, `retrieval_method`, `latency_ms`, `metadata`, `debug`.
+
+### 1. Naive RAG
+
+`query → vector search → top-k → LLM → cited answer`
+
+The original pipeline, unchanged. No keyword search and no hierarchy. It is
+the baseline, and its failures are the point.
+
+### 2. Hybrid + Hierarchical RAG
+
+- **Hybrid**: semantic search and BM25 run in parallel and are combined with
+  Reciprocal Rank Fusion. RRF is used rather than averaging scores because
+  the two are incomparable — Chroma returns a distance where lower is better,
+  BM25 an unbounded score where higher is better. Ranks compare; scores do
+  not. A chunk both retrievers found accumulates both contributions and rises.
+- **Hierarchical**: three narrowing stages. Stage 1 ranks *documents* from the
+  database (filename and summary) without touching the chunk index. Stage 2
+  searches for sections only inside those documents. Stage 3 retrieves chunks
+  only inside those sections.
+
+### 3. Agentic RAG (LangGraph)
+
+```
+retrieval_planner → tool_execution
+        ^                  |
+        +---- retry ---- evidence_validation
+                           |
+                    context_builder → answer_generation
+```
+
+The agent picks from five tools — `semantic_search`, `keyword_search`,
+`hybrid_search`, `hierarchical_search`, `document_lookup` — based on the
+question. If evidence validation finds the retrieved context thin, it plans
+again with a wider strategy rather than answering anyway (bounded by
+`MAX_ATTEMPTS`).
+
+Only the tools chosen and the plan's one-line reason are exposed, never the
+model's private reasoning.
+
+---
+
+## Chunk Metadata
+
+Structure survives parsing so retrieval can use it. Each chunk carries:
+
+`document_id` · `chunk_id` · `filename` · `chunk_index` · `page_number` ·
+`section_id` · `section_title` · `section_path` · `parent_section_id` ·
+`section_level`
+
+Headings come from real structure where the format provides it (DOCX styles,
+Markdown levels) and from a shape heuristic where it does not (PDF, TXT).
+Page numbers are attached per page during PDF parsing, before pages are
+joined. Chunks are cut *inside* a section, so one never straddles two
+unrelated parts of a policy.
+
+Documents ingested before a field existed simply leave it `None`; retrieval
+degrades rather than failing.
 
 ---
 
 ## Asking Questions
 
-`POST /ask` runs a Temporal workflow that embeds the question, retrieves the
-closest chunks, and asks the model to answer from those chunks alone.
+`POST /ask` runs the selected mode and returns the answer with citations
+resolved back to the chunks that support it.
 
 ```bash
 curl -X POST http://localhost:8000/ask \
   -H "Content-Type: application/json" \
-  -d '{"question": "How many days of annual leave do employees get?", "top_k": 5}'
+  -d '{"question": "What is control SEC-4412?",
+       "mode": "hybrid", "top_k": 5}'
 ```
 
-```json
-{
-  "question": "How many days of annual leave do employees get?",
-  "answer": "Employees accrue 20 days of paid annual leave per calendar year [1].",
-  "answered": true,
-  "citations": [
-    {
-      "number": 1,
-      "document_id": "f8f392d1-4670-4a74-8662-e419701067f5",
-      "filename": "leave_policy.txt",
-      "chunk_index": 0,
-      "content": "Acme Corp Leave Policy (2026) ...",
-      "score": 0.4227
-    }
-  ],
-  "sources": ["... every chunk that was retrieved ..."]
-}
-```
+`POST /ask/compare` runs one question through several modes at once, which is
+what the **Compare** page uses. `GET /modes` lists what is available.
+
+`POST /search` is the same retrieval with no model in the loop. It takes a
+`mode` of `semantic`, `keyword` or `hybrid` and returns each chunk with its
+section, page, retriever ranks and scores — useful for judging retrieval
+without an answer in the way.
+
+`GET /documents/{id}/structure` returns the document's heading tree along
+with how many chunks it has in the index and how many pages it spans. The
+headings are recovered by re-parsing the stored file, so a document whose
+file has been removed reports `structure_available: false` and stays
+queryable.
 
 ### How citations stay honest
 
 - The model is instructed to mark every statement with the `[n]` of the source
-  it came from. Those numbers index into `sources`.
-- `citations` contains only the sources the answer actually referenced, so a
-  caller can render footnotes without re-deriving them.
+  it came from. Those numbers index into `retrieved_chunks`.
+- `citations` contains only the chunks the answer actually referenced, so a
+  caller can render footnotes without re-deriving them. Each carries filename,
+  section and page, e.g. *hr_policy.md, Section 1.1 Annual Leave*. The
+  section path comes from the document's own headings, so it still reads as
+  prose.
+- A reply that is only citation markers with no statement (small models
+  sometimes answer a list question with just `[2]`) is retried once with an
+  explicit nudge, then reported as unanswered rather than shown as an answer.
 - A model can cite a number that does not exist. Any `[n]` outside the source
   list is dropped and logged rather than returned as a dead link.
 - If the retrieved chunks do not contain the answer, the model replies
   `NOT_FOUND`. The API turns that into `answered: false` with no citations
   instead of guessing.
-- If nothing is retrieved at all, the workflow short-circuits to the same
+- If nothing is retrieved at all, the pipeline short-circuits to the same
   shape — an empty library is a normal answer, not an error.
 
 `retrieval.max_distance` in `config.yaml` drops weakly-matching chunks before
