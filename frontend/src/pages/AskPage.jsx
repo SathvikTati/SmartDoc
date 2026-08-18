@@ -4,7 +4,6 @@ import {
   CornerDownLeft,
   FileSearch,
   Loader2,
-  MessageSquareText,
   Plus,
   Reply,
   SlidersHorizontal,
@@ -18,13 +17,13 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Textarea } from '@/components/ui/Field'
 import { Pill, PillButton } from '@/components/ui/Pill'
-import { Panel, SectionHeading } from '@/components/ui/Panel'
-import { EmptyState, ErrorState, SkeletonBlock } from '@/components/ui/States'
+import { Panel } from '@/components/ui/Panel'
+import { ErrorState, SkeletonBlock } from '@/components/ui/States'
 import { InvestigationView } from '@/components/rag/InvestigationView'
 import { QueryControls } from '@/components/rag/QueryControls'
 import * as api from '@/lib/api'
 import { FileIcon } from '@/components/FileIcon'
-import { cn, formatCount, formatRelative, truncate } from '@/lib/format'
+import { cn, formatCount, truncate } from '@/lib/format'
 import { useDocuments } from '@/state/DocumentsContext'
 import { useInvestigations } from '@/state/InvestigationsContext'
 
@@ -38,9 +37,15 @@ function greeting() {
   return `${now.toLocaleDateString(undefined, { weekday: 'long' })} ${part}`
 }
 
-// Ask is a working surface, so it shows only the last few conversations.
-// The full record lives on /history.
-const RECENT_SHOWN = 5
+// Mirrors the max_length on AskRequest. Duplicated deliberately: the
+// server stays authoritative, but reaching it just to be told "String
+// should have at most 1000 characters" is a round trip and a raw
+// validator message for something the box already knows.
+const MAX_QUESTION = 1000
+
+// Counting up from here rather than always — a counter on a six-word
+// question is noise.
+const COUNTER_FROM = 800
 
 const EXAMPLES = [
   'How much annual leave do employees get?',
@@ -56,11 +61,38 @@ const EXAMPLES = [
  * the point — it is the difference between an answer about sick leave and
  * one that quietly inherited maternity leave.
  */
+function isFollowUp(turn) {
+  const conversation = turn.result?.metadata?.conversation ?? {}
+
+  return (turn.relation ?? conversation.relation) === 'follow_up'
+}
+
+/**
+ * The rule between two turns.
+ *
+ * A follow-up gets its label set into the line. A new topic has nothing
+ * to label — and the line used to be split around the empty badge anyway,
+ * leaving a gap in the middle that read as a rendering fault rather than
+ * as a divider. It runs unbroken instead.
+ */
+function TurnDivider({ turn }) {
+  if (!isFollowUp(turn)) {
+    return <div className="mb-6 h-px bg-line" />
+  }
+
+  return (
+    <div className="mb-6 flex items-center gap-3">
+      <span className="h-px flex-1 bg-line" />
+      <RelationBadge turn={turn} />
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  )
+}
+
 function RelationBadge({ turn }) {
   const conversation = turn.result?.metadata?.conversation ?? {}
-  const relation = turn.relation ?? conversation.relation
 
-  if (relation !== 'follow_up') return null
+  if (!isFollowUp(turn)) return null
 
   const rewritten = turn.standaloneQuestion ?? conversation.standalone_question
   const strategy = turn.contextStrategy ?? conversation.strategy
@@ -91,14 +123,11 @@ export function AskPage() {
   const { documents, loading: documentsLoading } = useDocuments()
   const {
     chats,
-    total,
     loading: historyLoading,
     opening,
     current,
     appendTurn,
-    open,
     startNew,
-    remove,
     error: historyError,
   } = useInvestigations()
 
@@ -113,7 +142,8 @@ export function AskPage() {
 
   const abortRef = useRef(null)
   const inputRef = useRef(null)
-  const threadEndRef = useRef(null)
+  const lastTurnRef = useRef(null)
+  const turnCountRef = useRef(0)
 
   // Arriving from a document's "Ask about…" action. `docs` is a hard
   // scope: retrieval cannot reach outside it in any mode.
@@ -142,9 +172,42 @@ export function AskPage() {
     if (!current && !running) inputRef.current?.focus()
   }, [current, running])
 
+  const overLimit = question.length > MAX_QUESTION
+  const canSubmit = question.trim().length > 0 && !overLimit && !running
+
+  const turnCount = current?.turns?.length ?? 0
+
+  // Bring the *new* turn to the top of the reading area.
+  //
+  // This used to scroll a sentinel at the end of the thread to `start`,
+  // which pinned the bottom of the page to the top of the viewport and
+  // left the answer above the fold — the thread looked cut in half. It
+  // also ran in a requestAnimationFrame straight after the request, which
+  // could fire before React had laid the new turn out.
+  //
+  // Keyed on the count instead, so it runs once the turn is on the page,
+  // and only when one is added to a thread that already had turns —
+  // scrolling the first answer of a conversation just moves it away.
+  useEffect(() => {
+    const grew = turnCount > turnCountRef.current && turnCountRef.current > 0
+
+    turnCountRef.current = turnCount
+
+    if (!grew) return
+
+    lastTurnRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  }, [turnCount])
+
   async function run(text) {
     const trimmed = text?.trim()
     if (!trimmed || running) return
+
+    // Checked here as well as on the controls, because Enter reaches this
+    // without going through the button.
+    if (trimmed.length > MAX_QUESTION) return
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -175,13 +238,6 @@ export function AskPage() {
       })
 
       setQuestion('')
-
-      window.requestAnimationFrame(() =>
-        threadEndRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        }),
-      )
     } catch (caught) {
       if (controller.signal.aborted) return
       setError(caught?.message ?? 'The query failed')
@@ -282,7 +338,7 @@ export function AskPage() {
       <PillButton
         className="ml-auto"
         loading={running}
-        disabled={!question.trim() || !readyCount}
+        disabled={!canSubmit || !readyCount}
         onClick={() => void run(question)}
       >
         {running ? (
@@ -332,7 +388,7 @@ export function AskPage() {
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
-            void run(question)
+            if (canSubmit) void run(question)
           }
         }}
         placeholder={
@@ -341,8 +397,23 @@ export function AskPage() {
             : 'Ask about a policy, a control, a procedure…'
         }
         aria-label={current ? 'Follow-up question' : 'Question'}
+        aria-invalid={overLimit || undefined}
         className="resize-none border-0 bg-transparent px-1 text-lg leading-7 shadow-none hover:border-0 focus:border-0"
       />
+
+      {(overLimit || question.length >= COUNTER_FROM) && (
+        <p
+          className={cn(
+            'px-1 pt-1 text-xs tnum',
+            overLimit ? 'text-danger' : 'text-ink-subtle',
+          )}
+          role={overLimit ? 'alert' : undefined}
+        >
+          {overLimit
+            ? `${question.length - MAX_QUESTION} characters over the ${MAX_QUESTION} limit — shorten the question to ask it.`
+            : `${question.length} / ${MAX_QUESTION}`}
+        </p>
+      )}
 
       {controlPills}
       {modeControls}
@@ -405,14 +476,14 @@ export function AskPage() {
           <>
             <div className="space-y-10">
               {current.turns.map((turn, index) => (
-                <div key={turn.id ?? index}>
-                  {index > 0 && (
-                    <div className="mb-6 flex items-center gap-3">
-                      <span className="h-px flex-1 bg-line" />
-                      <RelationBadge turn={turn} />
-                      <span className="h-px flex-1 bg-line" />
-                    </div>
-                  )}
+                <div
+                  key={turn.id ?? index}
+                  ref={
+                    index === current.turns.length - 1 ? lastTurnRef : null
+                  }
+                  className="scroll-mt-6"
+                >
+                  {index > 0 && <TurnDivider turn={turn} />}
 
                   <InvestigationView
                     result={turn.result}
@@ -432,8 +503,6 @@ export function AskPage() {
               </Panel>
             )}
 
-            <div ref={threadEndRef} />
-
             <div className="mt-8 border-t border-line pt-6">
               {composerCard}
               <p className="mt-2 text-xs text-ink-subtle">
@@ -451,7 +520,11 @@ export function AskPage() {
             <SkeletonBlock lines={4} />
           </Panel>
         ) : (
-          <div className="pt-[8vh]">
+          /* Centred in the available height rather than pinned near the
+             top. With no conversation list under it there is nothing to
+             fill the lower half, and a composer floating above a screen
+             of empty canvas reads as a page that failed to load. */
+          <div className="flex min-h-[70vh] flex-col justify-center">
             <div className="mx-auto w-full max-w-3xl">
               <p className="text-lg text-ink-subtle">{greeting()}</p>
               <h1 className="mt-1 font-display text-display text-ink">
@@ -493,86 +566,6 @@ export function AskPage() {
             </div>
           </div>
         )}
-
-        {/* Recent conversations */}
-        {chats.length > 0 && (
-          <div className="mt-10">
-            <SectionHeading
-              title="Recent conversations"
-              meta={`${Math.min(RECENT_SHOWN, total)} of ${total}`}
-              actions={
-                total > RECENT_SHOWN && (
-                  <Link
-                    to="/history"
-                    className="rounded text-xs text-accent transition-colors hover:underline"
-                  >
-                    View all →
-                  </Link>
-                )
-              }
-            />
-
-            <Panel className="divide-y divide-line">
-              {chats.slice(0, RECENT_SHOWN).map((chat) => {
-                const active = chat.id === current?.id
-
-                return (
-                  <div
-                    key={chat.id}
-                    className={cn(
-                      'group flex items-center gap-3 px-3 py-2 transition-colors',
-                      active ? 'bg-accent-soft/50' : 'hover:bg-raised/70',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => void open(chat.id)}
-                      className="min-w-0 flex-1 rounded text-left"
-                    >
-                      <p
-                        className={cn(
-                          'truncate text-sm text-ink',
-                          active && 'font-medium',
-                        )}
-                      >
-                        {truncate(chat.title, 110)}
-                      </p>
-                      <p className="mt-0.5 flex items-center gap-1.5 text-xs text-ink-subtle">
-                        <span className="tnum">
-                          {formatCount(chat.turn_count, 'question')}
-                        </span>
-                        <span>·</span>
-                        <span>{formatRelative(chat.updated_at)}</span>
-                      </p>
-                    </button>
-
-                    <button
-                      type="button"
-                      aria-label="Delete conversation"
-                      onClick={() => void remove(chat.id)}
-                      className="rounded p-1 text-ink-subtle opacity-0 transition-opacity hover:bg-raised hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )
-              })}
-            </Panel>
-          </div>
-        )}
-
-        {!current &&
-          !running &&
-          !historyLoading &&
-          chats.length === 0 &&
-          readyCount > 0 && (
-            <EmptyState
-              icon={MessageSquareText}
-              title="No conversations yet"
-              description="Answers, their citations and the full retrieval trace are saved here and survive a refresh."
-              className="mt-4"
-            />
-          )}
       </PageBody>
     </>
   )
