@@ -299,6 +299,19 @@ export function UploadDialog({ open, onClose, documents, onUploaded }) {
                   PDF, DOCX, DOC, TXT, Markdown · up to {MAX_FILES} files · 5 MB
                   each
                 </p>
+
+                {/* Nothing in a file says it replaces another. Answers fall
+                    back to upload order when two documents disagree, which
+                    is a guess — deleting the old one removes the guess. */}
+                <p className="mx-auto mt-3 max-w-sm rounded-lg border border-line bg-raised/70 px-3 py-2 text-xs leading-5 text-ink-muted">
+                  <span className="font-medium text-ink">
+                    Replacing a document?
+                  </span>{' '}
+                  Delete the old version. If both are in the library and they
+                  disagree, answers go with the most recently uploaded and
+                  note what the older one said - accurate more often than not,
+                  but a guess either way.
+                </p>
                 <input
                   ref={inputRef}
                   type="file"
