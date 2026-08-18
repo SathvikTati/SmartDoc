@@ -6,22 +6,44 @@ from sqlalchemy.orm import Session
 
 from port6.services.model.models import Document
 from port6.services.schemas.document import (
+    DocumentResponse,
     DocumentSection,
     DocumentStructureResponse,
 )
 from port6.services.structure.service import build_sections
 from port6.services.vector.chroma import (
+    count_chunks_by_document,
     count_document_chunks,
     delete_document_chunks,
 )
 
 
-def get_documents(db: Session) -> list[Document]:
-    return (
+def get_documents(db: Session) -> list[DocumentResponse]:
+    """Every document, each carrying its chunk count.
+
+    The count comes from one tally over the index rather than a query per
+    row, and is attached here rather than stored on the document, so it
+    cannot drift from what is actually searchable.
+    """
+
+    documents = (
         db.query(Document)
         .order_by(Document.created_at.desc())
         .all()
     )
+
+    counts = count_chunks_by_document()
+
+    listed = []
+
+    for document in documents:
+
+        response = DocumentResponse.model_validate(document)
+        response.chunk_count = counts.get(str(document.id), 0)
+
+        listed.append(response)
+
+    return listed
 
 
 def get_document(

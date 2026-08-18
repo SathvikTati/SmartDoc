@@ -280,6 +280,23 @@ export function FilesPage() {
     [documents, selectedIds],
   )
 
+  // Bytes describe the files on disk; chunks describe what is actually
+  // searchable. They come apart — a scanned PDF can be large and index to
+  // almost nothing — so the bar reports both rather than implying that
+  // size is coverage.
+  const totalChunks = useMemo(
+    () => visible.reduce((total, document) => total + (document.chunk_count ?? 0), 0),
+    [visible],
+  )
+
+  const selectedChunks = useMemo(
+    () =>
+      documents
+        .filter((document) => selectedIds.has(document.id))
+        .reduce((total, document) => total + (document.chunk_count ?? 0), 0),
+    [documents, selectedIds],
+  )
+
   const menuItems = useMemo(() => {
     const document = menu?.target
 
@@ -620,6 +637,12 @@ export function FilesPage() {
               {selectedIds.size > 0
                 ? `${formatBytes(selectedBytes)} selected of ${formatBytes(totalBytes)}`
                 : `${formatBytes(totalBytes)} total`}
+            </span>
+            <span className="text-ink-subtle">·</span>
+            <span className="tnum" title="Indexed chunks — what retrieval searches">
+              {selectedIds.size > 0
+                ? `${formatCount(selectedChunks, 'chunk')} of ${totalChunks}`
+                : formatCount(totalChunks, 'chunk')}
             </span>
           </span>
         </div>

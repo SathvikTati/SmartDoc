@@ -1,3 +1,4 @@
+import logging
 import threading
 
 from langchain_chroma import Chroma
@@ -5,6 +6,9 @@ from langchain_core.documents import Document as LangChainDocument
 
 from port6.config import vector_config
 from port6.services.embeddings.service import get_embeddings
+
+
+logger = logging.getLogger(__name__)
 
 
 # Ingestion runs in FastAPI background threads, so uploading several files at
@@ -105,6 +109,44 @@ def count_document_chunks(
     )
 
     return len(stored.get("ids") or [])
+
+
+def count_chunks_by_document() -> dict[str, int]:
+    """Chunk counts for every indexed document, in one pass.
+
+    The document list needs a count per row, and calling
+    `count_document_chunks` for each would be one Chroma round trip per
+    document. This reads the metadata once and tallies in memory.
+
+    The tradeoff is that it pulls every chunk's metadata, so it belongs on
+    a list endpoint rather than on a hot path. It returns {} on failure:
+    a count is a nicety, and losing the index should not take the
+    document list down with it.
+    """
+
+    try:
+        vector_store = get_vector_store()
+
+        stored = vector_store._collection.get(include=["metadatas"])
+
+    except Exception as exc:
+        logger.warning("Could not count chunks by document: %s", exc)
+        return {}
+
+    counts: dict[str, int] = {}
+
+    for metadata in stored.get("metadatas") or []:
+
+        document_id = (metadata or {}).get("document_id")
+
+        if not document_id:
+            continue
+
+        key = str(document_id)
+
+        counts[key] = counts.get(key, 0) + 1
+
+    return counts
 
 
 def search_documents(

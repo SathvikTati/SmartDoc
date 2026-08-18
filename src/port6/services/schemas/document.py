@@ -26,6 +26,11 @@ class DocumentResponse(BaseModel):
     last_attempt_at: UtcDatetime | None = None
     failure_kind: str | None = None
 
+    # How many chunks this document currently has in the vector index.
+    # Filled on the list endpoint from one bulk tally; 0 elsewhere rather
+    # than a Chroma round trip per document.
+    chunk_count: int = 0
+
     model_config = ConfigDict(
         from_attributes=True
     )
