@@ -173,23 +173,58 @@ def test_context_marks_document_boundaries():
     assert context.index("[2]") < context.index("travel_policy.md")
 
 
-def test_context_carries_section_and_page_for_citation():
-    context = build_grouped_context(
-        [
-            chunk(
-                "a",
-                "handbook.pdf",
-                0.1,
-                content="Grievances go to HR.",
-                number=1,
-                section_path="Handbook > 5. Grievance",
-                page_number=3,
-            )
-        ]
+def test_the_grouped_context_carries_only_the_citation_marker():
+    """Section and page are deliberately not in the grouped header.
+
+    They were, and the model copied the header line straight into the
+    answer — "[1] | section: Handbook > 5. Grievance | page 3" appearing
+    in the middle of a sentence. Aggregation only needs the marker; the
+    section and page are still on the chunk, so the citation and the
+    evidence panel are unaffected.
+    """
+
+    source = chunk(
+        "a",
+        "handbook.pdf",
+        0.1,
+        content="Grievances go to HR.",
+        number=1,
+        section_path="Handbook > 5. Grievance",
+        page_number=3,
     )
 
-    assert "section: Handbook > 5. Grievance" in context
-    assert "page 3" in context
+    context = build_grouped_context([source])
+
+    assert "=== DOCUMENT: handbook.pdf ===" in context
+    assert "[1] Grievances go to HR." in context
+
+    assert "section:" not in context
+    assert "page 3" not in context
+
+    # Still available where citations are built from.
+    assert source.section_path == "Handbook > 5. Grievance"
+    assert source.page_number == 3
+
+
+def test_a_long_chunk_is_clipped_so_the_model_summarises_it():
+    """Given the full text of several documents the model transcribes."""
+
+    from port6.services.rag.aggregation import _excerpt
+
+    long_text = "This sentence is about probation. " * 60
+
+    context = build_grouped_context(
+        [chunk("a", "hr.md", 0.1, content=long_text, number=1)]
+    )
+
+    assert len(context) < len(long_text)
+    assert len(_excerpt(long_text)) <= 460
+
+
+def test_a_short_chunk_is_left_whole():
+    from port6.services.rag.aggregation import _excerpt
+
+    assert _excerpt("Probation lasts 3 months.") == "Probation lasts 3 months."
 
 
 # --- validation scoring -----------------------------------------------

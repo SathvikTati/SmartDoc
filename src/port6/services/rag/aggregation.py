@@ -250,6 +250,28 @@ async def coverage_search(
     }
 
 
+def _excerpt(content: str) -> str:
+    """Clip a chunk to roughly one paragraph, on a sentence boundary."""
+
+    limit = get_int("aggregation.excerpt_characters")
+
+    text = " ".join((content or "").split())
+
+    if len(text) <= limit:
+        return text
+
+    window = text[:limit]
+
+    # Prefer to end on a full stop, so the excerpt does not trail off
+    # mid-clause and invite the model to complete it.
+    stop = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+
+    if stop > limit // 2:
+        return window[: stop + 1]
+
+    return window.rstrip() + "…"
+
+
 def build_grouped_context(
     chunks: list[RetrievedChunk],
 ) -> str:
@@ -259,6 +281,13 @@ def build_grouped_context(
     a model asked to enumerate them has to infer the grouping from
     repeated filenames. Making it explicit is most of what turns a vague
     answer into a per-document one.
+
+    Each excerpt is clipped. An aggregation answer is about breadth —
+    what each document contributes — and a full chunk from every one of
+    six documents is more text than the answer should be. Given the whole
+    thing the model stops summarising and starts transcribing, header
+    lines included, which is how "what does each document say" came back
+    as a wall of pasted context.
     """
 
     grouped: dict[str, list[RetrievedChunk]] = {}
@@ -274,16 +303,13 @@ def build_grouped_context(
 
         for chunk in group:
 
-            header = [f"[{chunk.number}]"]
-
-            if chunk.section_path:
-                header.append(f"section: {chunk.section_path}")
-
-            if chunk.page_number is not None:
-                header.append(f"page {chunk.page_number}")
-
-            lines.append(" | ".join(header))
-            lines.append(chunk.content)
+            # Just the number. The section path and page used to be here
+            # too, and the model copied the whole header line into the
+            # answer — "[1] | section: ... | page 7" appearing in prose.
+            # Aggregation only needs the citation marker; the section and
+            # page are still on the chunk, and the evidence panel shows
+            # them.
+            lines.append(f"[{chunk.number}] {_excerpt(chunk.content)}")
 
         blocks.append("\n".join(lines))
 
