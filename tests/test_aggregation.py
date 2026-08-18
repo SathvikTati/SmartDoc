@@ -109,7 +109,9 @@ def test_each_document_contributes_and_none_can_crowd_the_others_out():
         chunk("b", "quiet.md", 0.50, number=5),
     ]
 
-    covered = group_by_document(chunks, chunks_per_document=2, max_documents=8)
+    covered = group_by_document(
+        chunks, chunks_per_document=2, max_documents=8
+    )["chunks"]
 
     by_document = {}
     for item in covered:
@@ -125,7 +127,9 @@ def test_documents_are_ordered_by_their_best_chunk():
         chunk("near", "near.md", 0.10, number=2),
     ]
 
-    covered = group_by_document(chunks, chunks_per_document=1, max_documents=8)
+    covered = group_by_document(
+        chunks, chunks_per_document=1, max_documents=8
+    )["chunks"]
 
     assert [item.document_id for item in covered] == ["near", "far"]
 
@@ -136,7 +140,9 @@ def test_max_documents_caps_the_breadth():
         for index in range(1, 11)
     ]
 
-    covered = group_by_document(chunks, chunks_per_document=1, max_documents=3)
+    covered = group_by_document(
+        chunks, chunks_per_document=1, max_documents=3
+    )["chunks"]
 
     assert len(covered) == 3
 
@@ -147,7 +153,9 @@ def test_chunks_without_a_score_sink_rather_than_crash():
         chunk("unscored", "unscored.md", None, number=2),
     ]
 
-    covered = group_by_document(chunks, chunks_per_document=1, max_documents=8)
+    covered = group_by_document(
+        chunks, chunks_per_document=1, max_documents=8
+    )["chunks"]
 
     assert [item.document_id for item in covered] == ["scored", "unscored"]
 
@@ -249,3 +257,203 @@ def test_validator_still_penalises_a_genuine_miss():
     chunks = [chunk("a", "hr_policy.md", 0.1, content="Annual leave is 22 days.")]
 
     assert keyword_overlap("Which documents mention probation?", chunks) == 0.0
+
+
+# --- coverage follows the pipeline ---------------------------------------
+
+class TestCoverageRespectsThePipeline:
+    """Every pipeline used to return byte-identical chunks here.
+
+    `coverage_search` hardcoded semantic + keyword and ignored the
+    caller, so a four-way comparison of a library-wide question showed
+    four columns of the same result — implying four strategies had run
+    when one had.
+    """
+
+    async def test_a_keyword_only_pipeline_uses_no_semantic_search(
+        self,
+        monkeypatch,
+    ):
+        from port6.services.rag import aggregation
+
+        async def fail(*args, **kwargs):
+            raise AssertionError("semantic_search should not have run")
+
+        monkeypatch.setattr(aggregation, "semantic_search", fail)
+        monkeypatch.setattr(
+            aggregation,
+            "keyword_search",
+            lambda *a, **k: [
+                chunk("a", "hr_policy.md", 0.1, content="Probation is 3 months.")
+            ],
+        )
+
+        result = await aggregation.coverage_search(
+            "which documents mention probation?",
+            retrievers=("keyword",),
+        )
+
+        assert result["documents"] == ["hr_policy.md"]
+
+    async def test_a_semantic_only_pipeline_uses_no_keyword_search(
+        self,
+        monkeypatch,
+    ):
+        from port6.services.rag import aggregation
+
+        def fail(*args, **kwargs):
+            raise AssertionError("keyword_search should not have run")
+
+        async def semantic(*args, **kwargs):
+            return [
+                chunk("a", "hr_policy.md", 0.1, content="Probation is 3 months.")
+            ]
+
+        monkeypatch.setattr(aggregation, "semantic_search", semantic)
+        monkeypatch.setattr(aggregation, "keyword_search", fail)
+
+        result = await aggregation.coverage_search(
+            "which documents mention probation?",
+            retrievers=("semantic",),
+        )
+
+        assert result["documents"] == ["hr_policy.md"]
+
+    async def test_without_a_keyword_signal_nothing_is_excluded(
+        self,
+        monkeypatch,
+    ):
+        """The weakness worth being able to see.
+
+        The keyword retriever is what decides which documents genuinely
+        *mention* the topic. A semantic-only pipeline has no such signal,
+        so it covers documents that merely sit near the topic in
+        embedding space.
+        """
+
+        from port6.services.rag import aggregation
+
+        async def semantic(*args, **kwargs):
+            return [
+                chunk("a", "hr_policy.md", 0.1, content="Probation is 3 months."),
+                chunk("b", "unrelated.md", 0.8, content="Coffee is provided."),
+            ]
+
+        monkeypatch.setattr(aggregation, "semantic_search", semantic)
+        monkeypatch.setattr(aggregation, "keyword_search", lambda *a, **k: [])
+
+        result = await aggregation.coverage_search(
+            "which documents mention probation?",
+            retrievers=("semantic",),
+        )
+
+        assert result["documents_excluded"] == 0
+        assert "unrelated.md" in result["documents"]
+
+    async def test_no_retrievers_named_means_both(self, monkeypatch):
+        """What an agentic pipeline gets: the previous behaviour."""
+
+        from port6.services.rag import aggregation
+
+        calls = []
+
+        async def semantic(*args, **kwargs):
+            calls.append("semantic")
+            return [chunk("a", "hr_policy.md", 0.1, content="Probation.")]
+
+        def keyword(*args, **kwargs):
+            calls.append("keyword")
+            return [chunk("a", "hr_policy.md", 0.1, content="Probation.")]
+
+        monkeypatch.setattr(aggregation, "semantic_search", semantic)
+        monkeypatch.setattr(aggregation, "keyword_search", keyword)
+
+        await aggregation.coverage_search("which documents mention probation?")
+
+        assert calls == ["semantic", "keyword"]
+
+
+# --- top_k is a budget, here as everywhere else -------------------------
+
+class TestCoverageBudget:
+    """Coverage decides how chunks are spread, not how many there are.
+
+    It used to return max_documents x chunks_per_document regardless of
+    what was asked for, so a request for 5 came back with 15 — three
+    times the context the caller had budgeted, unexplained.
+    """
+
+    def _four_documents(self):
+        return [
+            chunk(f"d{i}", f"d{i}.md", i / 10, number=i)
+            for i in range(1, 5)
+        ] + [
+            chunk(f"d{i}", f"d{i}.md", i / 10 + 0.01, number=i + 10)
+            for i in range(1, 5)
+        ]
+
+    def test_the_budget_is_never_exceeded(self):
+        covered = group_by_document(
+            self._four_documents(),
+            chunks_per_document=2,
+            max_documents=8,
+            budget=5,
+        )
+
+        assert len(covered["chunks"]) == 5
+
+    def test_breadth_comes_before_depth(self):
+        """Every document gets its first chunk before any gets a second."""
+
+        covered = group_by_document(
+            self._four_documents(),
+            chunks_per_document=2,
+            max_documents=8,
+            budget=5,
+        )
+
+        documents = [c.document_id for c in covered["chunks"]]
+
+        assert set(documents[:4]) == {"d1", "d2", "d3", "d4"}
+
+    def test_a_budget_below_the_document_count_drops_the_weakest(self):
+        covered = group_by_document(
+            self._four_documents(),
+            chunks_per_document=2,
+            max_documents=8,
+            budget=2,
+        )
+
+        assert len(covered["chunks"]) == 2
+        assert {c.document_id for c in covered["chunks"]} == {"d1", "d2"}
+        assert covered["documents_matched"] == 4
+
+    def test_no_budget_keeps_the_previous_behaviour(self):
+        covered = group_by_document(
+            self._four_documents(),
+            chunks_per_document=2,
+            max_documents=8,
+        )
+
+        assert len(covered["chunks"]) == 8
+
+    def test_a_budget_larger_than_the_candidates_takes_them_all(self):
+        covered = group_by_document(
+            self._four_documents(),
+            chunks_per_document=2,
+            max_documents=8,
+            budget=100,
+        )
+
+        assert len(covered["chunks"]) == 8
+
+    def test_truncation_is_reported_not_silent(self):
+        covered = group_by_document(
+            self._four_documents(),
+            chunks_per_document=2,
+            max_documents=8,
+            budget=2,
+        )
+
+        assert covered["documents_matched"] == 4
+        assert covered["documents_covered"] == 2

@@ -123,12 +123,25 @@ def group_by_document(
     chunks: list[RetrievedChunk],
     chunks_per_document: int,
     max_documents: int,
-) -> list[RetrievedChunk]:
-    """Keep the best few chunks from each document, breadth first.
+    budget: int | None = None,
+) -> dict:
+    """Spread a chunk budget across documents, breadth first.
 
-    Documents are ordered by their single best chunk, and each contributes
-    at most `chunks_per_document` — so one verbose document cannot crowd
-    the others out of the context the way plain top-k lets it.
+    Coverage decides how chunks are *spread*, not how many there are.
+    That distinction was missing: this used to return up to
+    `max_documents x chunks_per_document` regardless of what the caller
+    asked for, so a request for 5 chunks came back with 15 — three times
+    the context the user had budgeted, with no indication why.
+
+    `budget` is that request. Allocation is round-robin: every matching
+    document gets its first chunk before any gets a second, so spending
+    the budget still favours breadth. A document only reaches
+    `chunks_per_document` once every other one has been served.
+
+    When there are more matching documents than budget, the weakest are
+    dropped rather than the budget exceeded — and the count is returned,
+    because "covered 5 of 9" is the kind of truncation that must not be
+    silent.
     """
 
     by_document: dict[str, list[RetrievedChunk]] = {}
@@ -144,19 +157,62 @@ def group_by_document(
 
     ordered = sorted(by_document.values(), key=best_score)
 
+    matched = len(ordered)
+
+    ordered = ordered[:max_documents]
+
+    if budget is None:
+        budget = len(ordered) * chunks_per_document
+
+    # A budget smaller than the number of documents cannot cover them
+    # all, so the weakest documents go rather than the strongest getting
+    # nothing.
+    ordered = ordered[:budget] if budget else []
+
     selected: list[RetrievedChunk] = []
 
-    for group in ordered[:max_documents]:
-        selected.extend(group[:chunks_per_document])
+    for round_index in range(chunks_per_document):
+        for group in ordered:
 
-    return selected
+            if len(selected) >= budget:
+                break
+
+            if round_index < len(group):
+                selected.append(group[round_index])
+
+        if len(selected) >= budget:
+            break
+
+    return {
+        "chunks": selected,
+        "documents_matched": matched,
+        "documents_covered": len({c.document_id for c in selected}),
+    }
 
 
 async def coverage_search(
     query: str,
     document_ids: list[str] | None = None,
+    retrievers: tuple[str, ...] | None = None,
+    top_k: int | None = None,
 ) -> dict:
-    """Retrieve for breadth: the best chunks from each matching document."""
+    """Retrieve for breadth: the best chunks from each matching document.
+
+    `retrievers` is the calling pipeline's composition. It used to be
+    ignored, and the result was that every pipeline returned byte-identical
+    chunks for a library-wide question — four columns on the comparison
+    page implying four strategies had run, when one had.
+
+    Honouring it costs nothing and makes the difference visible: a
+    semantic-only pipeline has no keyword signal to decide which documents
+    genuinely *mention* the topic, so it covers documents that merely sit
+    near it in embedding space. That is a real weakness of semantic-only
+    retrieval, and worth being able to see rather than papering over.
+
+    None means all of them, which is what an agentic pipeline gets.
+    """
+
+    from port6.services.rag.hierarchical import hierarchical_search
 
     max_documents = get_int("aggregation.max_documents")
     per_document = get_int("aggregation.chunks_per_document")
@@ -166,11 +222,26 @@ async def coverage_search(
     # here, so breadth costs no extra round trips.
     candidate_k = max_documents * per_document * 4
 
-    semantic = await semantic_search(
-        query,
-        top_k=candidate_k,
-        document_ids=document_ids,
-    )
+    use = set(retrievers) if retrievers else {"semantic", "keyword"}
+
+    dense: list[RetrievedChunk] = []
+
+    if "semantic" in use:
+        dense.extend(
+            await semantic_search(
+                query,
+                top_k=candidate_k,
+                document_ids=document_ids,
+            )
+        )
+
+    if "hierarchical" in use:
+        hierarchy = await hierarchical_search(
+            query,
+            top_k=candidate_k,
+            document_ids=document_ids,
+        )
+        dense.extend(hierarchy["chunks"])
 
     # BM25 alongside, because "which documents mention probation" turns on
     # the literal word far more than on embedding similarity — but only on
@@ -178,16 +249,19 @@ async def coverage_search(
     topic = topic_terms(query)
     keyword_query = " ".join(topic) if topic else query
 
-    keyword = keyword_search(
-        keyword_query,
-        top_k=candidate_k,
-        document_ids=document_ids,
-    )
+    keyword: list[RetrievedChunk] = []
+
+    if "keyword" in use:
+        keyword = keyword_search(
+            keyword_query,
+            top_k=candidate_k,
+            document_ids=document_ids,
+        )
 
     merged: dict[str, RetrievedChunk] = {}
 
-    for chunk in semantic:
-        merged[chunk.chunk_id] = chunk
+    for chunk in dense:
+        merged.setdefault(chunk.chunk_id, chunk)
 
     for chunk in keyword:
         existing = merged.get(chunk.chunk_id)
@@ -200,7 +274,15 @@ async def coverage_search(
             if source not in existing.sources:
                 existing.sources.append(source)
 
+        # Carry the rank across too. Without this the chunk claimed to
+        # have been found by BM25 and showed no position for it, which
+        # reads in the UI as a missing number rather than a merge.
+        if existing.keyword_rank is None:
+            existing.keyword_rank = chunk.keyword_rank
+
     candidates = list(merged.values())
+
+    semantic = dense
 
     # Semantic search returns the nearest chunk from *every* document,
     # whether or not it mentions the topic. In an enumeration answer those
@@ -223,16 +305,36 @@ async def coverage_search(
         )
         candidates = filtered
 
-    chunks = group_by_document(
+    grouped = group_by_document(
         candidates,
         chunks_per_document=per_document,
         max_documents=max_documents,
+        budget=top_k,
     )
+
+    chunks = grouped["chunks"]
 
     for position, chunk in enumerate(chunks, start=1):
         chunk.number = position
 
     documents = sorted({chunk.filename for chunk in chunks})
+
+    # Breadth wanted more than the budget allowed. Reported rather than
+    # silently truncated: a coverage answer that quietly dropped four
+    # documents reads as though it covered everything.
+    dropped = max(
+        0,
+        min(grouped["documents_matched"], max_documents) - len(documents),
+    )
+
+    if dropped:
+        logger.info(
+            "Coverage limited by top_k=%s: covered %d of %d matching "
+            "documents",
+            top_k,
+            len(documents),
+            grouped["documents_matched"],
+        )
 
     logger.info(
         "Coverage search: %d chunks across %d documents",
@@ -243,6 +345,8 @@ async def coverage_search(
     return {
         "chunks": chunks,
         "documents": documents,
+        "documents_matched": grouped["documents_matched"],
+        "documents_dropped_for_budget": dropped,
         "semantic_candidates": len(semantic),
         "keyword_candidates": len(keyword),
         "documents_excluded": excluded,
