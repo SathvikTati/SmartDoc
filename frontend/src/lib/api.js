@@ -152,7 +152,12 @@ export function listModes() {
  * `documentIds` is a hard scope: retrieval cannot reach outside it in any
  * mode. Omit or pass an empty list to search the whole library.
  */
-export function ask(question, mode, topK, documentIds, signal) {
+/**
+ * `chatId` continues a conversation, so a follow-up like "what about sick
+ * leave?" is resolved against the turns before it. Omit it to start a new
+ * one — the id comes back in `metadata.chat_id` either way.
+ */
+export function ask(question, mode, topK, documentIds, chatId, signal) {
   return call(() =>
     client.post(
       '/ask',
@@ -161,6 +166,7 @@ export function ask(question, mode, topK, documentIds, signal) {
         mode,
         top_k: topK,
         document_ids: documentIds?.length ? documentIds : null,
+        chat_id: chatId ?? null,
       },
       { timeout: ASK_TIMEOUT, signal },
     ),
@@ -216,6 +222,20 @@ export function deleteHistoryRun(id) {
 
 export function clearHistory() {
   return call(() => client.delete('/history'))
+}
+
+// --- Conversations ----------------------------------------------------
+
+export function listChats({ limit = 50, offset = 0 } = {}) {
+  return call(() => client.get('/chats', { params: { limit, offset } }))
+}
+
+export function getChat(id) {
+  return call(() => client.get(`/chats/${id}`))
+}
+
+export function deleteChat(id) {
+  return call(() => client.delete(`/chats/${id}`))
 }
 
 // --- Settings and prompts --------------------------------------------

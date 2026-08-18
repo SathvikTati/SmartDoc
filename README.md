@@ -157,6 +157,12 @@ the baseline, and its failures are the point.
   searches for sections only inside those documents. Stage 3 retrieves chunks
   only inside those sections.
 
+Hybrid also detects **library-wide questions** — *"which documents mention
+probation?"*, *"compare X across all documents"* — and switches to coverage
+retrieval: the best chunks from *each* matching document rather than the
+best chunks overall. Plain top-k cannot answer these, because all five
+chunks can come from one document.
+
 ### 3. Agentic RAG (LangGraph)
 
 ```
@@ -167,14 +173,26 @@ retrieval_planner → tool_execution
                     context_builder → answer_generation
 ```
 
-The agent picks from five tools — `semantic_search`, `keyword_search`,
-`hybrid_search`, `hierarchical_search`, `document_lookup` — based on the
-question. If evidence validation finds the retrieved context thin, it plans
+The agent picks from eight tools — `semantic_search`, `keyword_search`,
+`hybrid_search`, `hierarchical_search`, `aggregate_search`,
+`document_lookup`, plus `calculate` for arithmetic and `web_search` for
+the public internet — based on the question. If evidence validation finds the retrieved context thin, it plans
 again with a wider strategy rather than answering anyway (bounded by
-`MAX_ATTEMPTS`).
+the `agent.max_attempts` setting).
 
 Only the tools chosen and the plan's one-line reason are exposed, never the
 model's private reasoning.
+
+**`calculate`** exists because models are unreliable at arithmetic and
+confidently wrong when they slip. It evaluates through an AST walker rather
+than `eval` — the expression comes from a model, so it is untrusted input.
+
+**`web_search`** is keyless (DuckDuckGo; Google has no keyless API) and
+**off by default**, because an answer citing the internet is a different
+promise from one citing only your documents. Turn it on with
+`PUT /settings/web.enabled`. Web sources are labelled in the context, in
+the citations and in the UI, and a question scoped to specific documents
+never reaches the web at all.
 
 ---
 
@@ -211,6 +229,13 @@ curl -X POST http://localhost:8000/ask \
 
 `POST /ask/compare` runs one question through several modes at once, which is
 what the **Compare** page uses. `GET /modes` lists what is available.
+
+Every question belongs to a conversation. Pass `chat_id` to continue one,
+and a follow-up is resolved against its earlier turns — *"what about sick
+leave?"* is rewritten to *"What is the sick leave policy?"* before
+retrieval runs. An unrelated question starts fresh instead of inheriting
+the wrong documents. `GET /chats` lists conversations and
+`GET /chats/{id}` returns one with every turn.
 
 `GET /history` lists past questions and `GET /history/{id}` reopens one with
 the citations and trace it originally produced — history is stored server

@@ -26,6 +26,10 @@ class RetrievedChunk(BaseModel):
     filename: str
     content: str
 
+    # Set only on a web result: the page it came from. Its presence is
+    # what marks a source as external rather than one of your documents.
+    url: str | None = None
+
     section_id: str | None = None
     section_title: str | None = None
     section_path: str | None = None
@@ -39,6 +43,10 @@ class RetrievedChunk(BaseModel):
     semantic_rank: int | None = None
     keyword_rank: int | None = None
     fused_score: float | None = None
+
+    @property
+    def is_web(self) -> bool:
+        return self.url is not None
 
     def citation_label(self) -> str:
         """e.g. "hr_policy.md, Section 1.2 Maternity Leave, Page 12"."""

@@ -118,6 +118,54 @@ happened, and `POST /documents/{id}/reprocess` runs it again.
 
 ---
 
+## Conversations
+
+Every question belongs to a chat. One is created if none is given, and its
+id comes back in `metadata.chat_id`, so a caller never has to decide up
+front that it wanted a conversation.
+
+A question that arrives in a chat is first *resolved* against the turns
+before it, because some questions are not searchable as written:
+
+```
+Q1  "What is the maternity leave policy?"
+Q2  "What about sick leave?"      -> retrieves almost nothing on its own
+Q3  "Who is eligible?"            -> matches eligibility in every policy
+```
+
+**The expensive failure is the false positive.** Carrying maternity-leave
+context into a question about expenses produces a confident wrong answer,
+so the default is "new topic" and a follow-up has to be argued for.
+
+Resolution runs in two halves:
+
+1. **Rules, free.** A question carrying no dependent signal — no pronoun,
+   no ellipsis, not a bare interrogative — is searchable as written and is
+   treated as a new topic without a model call. Most questions stop here.
+   This can only fail *safe*: the fallback is to ignore prior context, not
+   to apply it.
+2. **One small model call**, only for the rest. It returns the relation,
+   the question rewritten to stand alone, and what to do with prior chunks.
+
+Three outcomes:
+
+| Strategy | When | What happens |
+|---|---|---|
+| `fresh` | new topic | Prior context is discarded entirely |
+| `combine` | most follow-ups | Retrieve on the rewritten question, then merge a few chunks from the previous turn |
+| `reuse` | "explain that more simply" | Answer from the previous turn's chunks; no retrieval runs |
+
+A follow-up's rewritten question is what retrieval and generation actually
+see; the user's original wording is what gets displayed and stored. Both
+are recorded on the run, so an answer can be traced back to what was
+really searched.
+
+If the classifier fails, the question is searched as written and prior
+context is ignored — a thinner answer, never one built on the wrong
+document.
+
+---
+
 ## Query
 
 All three modes share the same entry point, prompt, and citation handling. Only retrieval differs.
@@ -184,6 +232,40 @@ The hierarchical and flat-hybrid candidates are fused rather than one
 replacing the other: hierarchy is precise but can narrow onto the wrong
 document, and the flat pass is the safety net.
 
+### Cross-document aggregation
+
+Some questions are answered by breadth, not depth:
+
+```
+"Which documents mention probation?"
+"What does each policy say about notice periods?"
+"Compare the leave policies across all documents."
+```
+
+Plain top-k fails these *structurally*. With `top_k=5` every chunk can come
+from one document, so the model is never shown the others and cannot
+enumerate them however it is prompted.
+
+Hybrid detects these with a conservative set of patterns — they all name
+documents explicitly or ask for an exhaustive list, so *"how many days of
+annual leave"* does not match — and switches to coverage retrieval:
+
+1. **Topic terms** are separated from the asking-about-the-library
+   scaffolding. *"What does each policy say about probation?"* has one real
+   term, `probation`; matching on `policy` or `say` would qualify every
+   document.
+2. **One wide query**, then group by document keeping the best few from
+   each, so a verbose document cannot take every slot.
+3. **Documents with no keyword hit on the topic are dropped.** Semantic
+   search returns the nearest chunk from every document whether or not it
+   mentions the subject, and in an enumeration answer those near-misses are
+   actively harmful.
+4. **The context is grouped by document**, with `=== DOCUMENT: name ===`
+   headings, so the boundaries the answer must enumerate are visible.
+
+Agentic reaches the same thing through the `aggregate_search` tool, which
+the planner selects for library-wide questions.
+
 ### Mode 3 — Agentic (LangGraph)
 
 ```mermaid
@@ -207,7 +289,30 @@ stateDiagram-v2
 | `keyword_search` | exact terms, codes, rare words |
 | `hybrid_search` | both fused with RRF |
 | `hierarchical_search` | answer sits in a specific part of a known document |
+| `aggregate_search` | questions about the library as a whole: which documents mention X, comparing across documents |
+| `calculate` | arithmetic the answer depends on — remaining leave, a percentage of a cap |
+| `web_search` | the public web, when the library cannot answer. **Off by default** |
 | `document_lookup` | what documents exist (returns filenames and clipped summaries as a chunk, so the model can actually answer from it) |
+
+Tools are LangChain `@tool` objects, so each one's name, description and
+arguments are defined once, beside the code. They are still selected by
+*prompt* rather than by function calling: the local model picks the right
+tool reliably but emits the choice as JSON in its content and leaves
+`tool_calls` empty, so `bind_tools` and `ToolNode` would see nothing. On a
+provider with working function calling the same definitions work unchanged.
+
+Two of them are not retrieval:
+
+- **`calculate`** evaluates arithmetic through an AST walker, never `eval`
+  — the expression comes from a model, and `eval` on model output is
+  arbitrary code execution. The agent hands every tool the raw question,
+  so when it receives a sentence it recovers the expression first
+  (*"Annual leave is 22 days. If I have taken 8…"* → `22 - 8` → `14`).
+- **`web_search`** reaches the public internet, which changes what an
+  answer means. It is off by default, withheld from the planner entirely
+  when unavailable, refused outright for a question scoped to specific
+  documents, and its results are labelled `WEB` in the context, badged in
+  the UI and linked to their source rather than to a document.
 
 **Planning** is done by the model on the first attempt (given the tool catalogue, it returns JSON `{"tools": [...], "reason": "..."}`), falling back to rules if the model returns anything unusable. The **retry always uses rules** — it is a deliberate widening to a full hybrid sweep, not a re-plan.
 
@@ -226,7 +331,7 @@ keyword-only plan backwards and answered from the *worst* matches it found.
 Each tool returns its own best-first ordering, and RRF over those positions is
 what the context builder sorts on.
 
-Bounded by `MAX_ATTEMPTS = 2`, so an unanswerable question still terminates. If evidence is still thin and nothing was retrieved, the agent **declines** rather than generating.
+Bounded by the `agent.max_attempts` setting, so an unanswerable question still terminates. If evidence is still thin and nothing was retrieved, the agent **declines** rather than generating.
 
 Only the tools chosen and a one-line plan reason are exposed. Never the model's private reasoning.
 

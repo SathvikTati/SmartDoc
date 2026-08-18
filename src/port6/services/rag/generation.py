@@ -52,7 +52,13 @@ def build_context(
 
     for chunk in chunks:
 
-        header = [f"[{chunk.number}] {chunk.filename}"]
+        # A web result is marked in the context itself, so the model
+        # attributes it as external rather than as one of the documents.
+        if chunk.url:
+            header = [f"[{chunk.number}] WEB: {chunk.filename}", chunk.url]
+
+        else:
+            header = [f"[{chunk.number}] {chunk.filename}"]
 
         if chunk.section_path:
             header.append(f"section: {chunk.section_path}")
@@ -135,8 +141,16 @@ async def _invoke(
 async def generate_answer(
     query: str,
     chunks: list[RetrievedChunk],
+    prompt_name: str = "answer_generation",
+    context_builder=build_context,
 ) -> dict:
-    """Generate an answer and resolve its citations back to chunks."""
+    """Generate an answer and resolve its citations back to chunks.
+
+    The prompt and the way sources are rendered are both swappable, so an
+    aggregation answer reuses every guard here — the NOT_FOUND sentinel,
+    hallucinated-citation dropping and the degenerate-answer retry —
+    rather than reimplementing them.
+    """
 
     if not query.strip():
         raise ValueError("Query cannot be empty")
@@ -150,9 +164,9 @@ async def generate_answer(
 
     number_chunks(chunks)
 
-    context = build_context(chunks)
+    context = context_builder(chunks)
 
-    chain = get_prompt("answer_generation") | get_chat_model()
+    chain = get_prompt(prompt_name) | get_chat_model()
 
     answer = await _invoke(chain, query, context)
 

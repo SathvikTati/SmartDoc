@@ -1,18 +1,33 @@
 """Retrieval tools the agent can choose between.
 
-Each tool is an independently testable async callable returning
-`{"chunks": [...], "info": {...}}`. The registry carries a description of
-when each one is useful, which is what the planner reasons over.
+Each is a LangChain `@tool`, so its description lives in the docstring
+beside the code rather than in a registry a hundred lines away, and its
+argument schema is generated rather than restated.
+
+**They are selected by prompt, not by function calling.** The configured
+local model picks the right tool reliably but emits the choice as JSON in
+its content, leaving `tool_calls` empty — so `bind_tools` and LangGraph's
+`ToolNode` would see no call and silently do nothing. The planner in
+`agent.py` parses that JSON instead. The `@tool` wrapper still earns its
+place: one source of truth for names, descriptions and arguments, and
+native function calling becomes available unchanged on a provider that
+supports it.
+
+Every tool returns `{"chunks": [...], "info": {...}}`. Chunks are
+`RetrievedChunk` objects rather than text, because they flow into the
+context builder and the citation list, not back into the model as a tool
+message.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Awaitable, Callable
+
+from langchain_core.tools import tool
 
 from port6.services.db.database import SessionLocal
 from port6.services.model.models import Document
+from port6.services.rag.aggregation import coverage_search
 from port6.services.rag.base import RetrievedChunk
 from port6.services.rag.hierarchical import hierarchical_search
 from port6.services.rag.retrievers import (
@@ -20,28 +35,25 @@ from port6.services.rag.retrievers import (
     keyword_search,
     semantic_search,
 )
-from port6.services.settings.service import get_int
+from port6.services.settings.service import get_int, get_setting
+from port6.services.web import search as web
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Tool:
-    name: str
-    description: str
-    run: Callable[..., Awaitable[dict]]
 
 
 # -------------------------------------------------------------------
 # Tools
 # -------------------------------------------------------------------
 
-async def tool_semantic_search(
+@tool("semantic_search")
+async def semantic_search_tool(
     query: str,
     top_k: int = 8,
     document_ids: list[str] | None = None,
 ) -> dict:
+    """Vector similarity search over all chunks. Good for general
+    questions phrased in natural language."""
 
     chunks = await semantic_search(
         query,
@@ -49,17 +61,17 @@ async def tool_semantic_search(
         document_ids=document_ids,
     )
 
-    return {
-        "chunks": chunks,
-        "info": {"retrieved": len(chunks)},
-    }
+    return {"chunks": chunks, "info": {"retrieved": len(chunks)}}
 
 
-async def tool_keyword_search(
+@tool("keyword_search")
+async def keyword_search_tool(
     query: str,
     top_k: int = 8,
     document_ids: list[str] | None = None,
 ) -> dict:
+    """BM25 keyword search. Good for exact terms, policy names, codes,
+    numbers and rare words."""
 
     chunks = keyword_search(
         query,
@@ -67,17 +79,17 @@ async def tool_keyword_search(
         document_ids=document_ids,
     )
 
-    return {
-        "chunks": chunks,
-        "info": {"retrieved": len(chunks)},
-    }
+    return {"chunks": chunks, "info": {"retrieved": len(chunks)}}
 
 
-async def tool_hybrid_search(
+@tool("hybrid_search")
+async def hybrid_search_tool(
     query: str,
     top_k: int = 8,
     document_ids: list[str] | None = None,
 ) -> dict:
+    """Semantic and keyword search fused with RRF. A safe default when the
+    question mixes concepts and exact terms."""
 
     semantic = await semantic_search(
         query,
@@ -102,11 +114,14 @@ async def tool_hybrid_search(
     }
 
 
-async def tool_hierarchical_search(
+@tool("hierarchical_search")
+async def hierarchical_search_tool(
     query: str,
     top_k: int = 8,
     document_ids: list[str] | None = None,
 ) -> dict:
+    """Narrows document, then section, then chunk. Good when the answer
+    sits in a specific part of a known document."""
 
     result = await hierarchical_search(
         query,
@@ -123,18 +138,140 @@ async def tool_hierarchical_search(
     }
 
 
-async def tool_document_lookup(
+@tool("aggregate_search")
+async def aggregate_search_tool(
     query: str,
     top_k: int = 8,
     document_ids: list[str] | None = None,
 ) -> dict:
-    """List what is in the library.
+    """Cover every document that mentions the topic, taking the best
+    chunks from each. Use for questions about the library as a whole:
+    which documents mention X, comparing across documents, or what each
+    policy says."""
 
-    The catalogue is returned as a chunk, not only as `info`: only chunks
-    reach the answer generator, so a tool that reported the library purely
-    as metadata could never actually answer "what documents do we have?".
-    """
+    # top_k is ignored on purpose: the shape of an aggregation answer is
+    # set by how many documents match, not by a chunk budget.
+    coverage = await coverage_search(query, document_ids=document_ids)
 
+    return {
+        "chunks": coverage["chunks"],
+        "info": {
+            "documents_covered": coverage["documents"],
+            "aggregated": True,
+        },
+    }
+
+
+@tool("web_search")
+async def web_search_tool(
+    query: str,
+    top_k: int = 5,
+    document_ids: list[str] | None = None,
+) -> dict:
+    """Search the public web. Use ONLY when the uploaded documents cannot
+    answer the question — current events, external standards, or
+    background the library does not contain. Results come from the
+    internet, not from the user's documents."""
+
+    # A document scope is a statement about which *documents* may be
+    # used; reaching outside the library would contradict it.
+    if document_ids:
+        logger.info("Web search skipped: the question is scoped to documents")
+        return {
+            "chunks": [],
+            "info": {"skipped": "question is scoped to specific documents"},
+        }
+
+    chunks = web.search(query, top_k=top_k)
+
+    return {
+        "chunks": chunks,
+        "info": {
+            "retrieved": len(chunks),
+            "web": True,
+            "urls": [chunk.url for chunk in chunks],
+        },
+    }
+
+
+@tool("calculate")
+async def calculate_tool(
+    query: str,
+    top_k: int = 8,
+    document_ids: list[str] | None = None,
+) -> dict:
+    """Evaluate an arithmetic expression. Use for any sum the answer
+    depends on — remaining leave, a percentage of a cap, a pro-rated
+    entitlement. Pass only the expression, for example "22 - 8" or
+    "250 * 0.15". Do not pass a sentence."""
+
+    from port6.services.rag.calculator import (
+        UnsafeExpression,
+        calculate,
+        extract_expression,
+        format_result,
+    )
+
+    expression = query
+
+    try:
+        value = calculate(expression)
+
+    except UnsafeExpression:
+        # The agent hands every tool the raw question, so this is usually
+        # a sentence rather than an expression. Recover the arithmetic
+        # from it before giving up.
+        expression = await extract_expression(query) or query
+
+        try:
+            value = calculate(expression)
+
+        except UnsafeExpression as exc:
+            return {
+                "chunks": [
+                    RetrievedChunk(
+                        number=1,
+                        chunk_id=f"calc:{query}",
+                        document_id="calculation",
+                        filename="calculator",
+                        content=(
+                            f"No calculation could be made from {query!r}: "
+                            f"{exc}"
+                        ),
+                        sources=["calculation"],
+                    )
+                ],
+                "info": {"expression": expression, "error": str(exc)},
+            }
+
+    result = format_result(value)
+
+    return {
+        "chunks": [
+            RetrievedChunk(
+                number=1,
+                chunk_id=f"calc:{expression}",
+                document_id="calculation",
+                filename="calculator",
+                content=f"{expression} = {result}",
+                sources=["calculation"],
+            )
+        ],
+        "info": {"expression": expression, "result": result},
+    }
+
+
+@tool("document_lookup")
+async def document_lookup_tool(
+    query: str,
+    top_k: int = 8,
+    document_ids: list[str] | None = None,
+) -> dict:
+    """List the documents in the library. Use to find out what exists."""
+
+    # The catalogue is returned as a chunk, not only as `info`: only
+    # chunks reach the answer generator, so a tool that reported the
+    # library purely as metadata could never answer "what do we have?".
     db = SessionLocal()
 
     try:
@@ -152,9 +289,7 @@ async def tool_document_lookup(
         # Bounded: a library of hundreds would otherwise be pasted whole
         # into the context window for a single catalogue question.
         documents = (
-            base.order_by(Document.created_at.desc())
-            .limit(limit)
-            .all()
+            base.order_by(Document.created_at.desc()).limit(limit).all()
         )
 
         catalogue = [
@@ -167,10 +302,7 @@ async def tool_document_lookup(
         ]
 
         if not catalogue:
-            return {
-                "chunks": [],
-                "info": {"documents": []},
-            }
+            return {"chunks": [], "info": {"documents": []}}
 
         summary_characters = get_int("agent.catalogue_summary_characters")
 
@@ -187,10 +319,9 @@ async def tool_document_lookup(
 
             line = f"- {entry['filename']}"
 
-            # The summary is the only thing that says what a file is about,
-            # now that nothing classifies documents by type or department.
-            # It is clipped so a long one cannot bury the filenames, which
-            # are what a "what documents do we have?" answer should list.
+            # The summary is the only thing that says what a file is
+            # about. Clipped so a long one cannot bury the filenames,
+            # which are what a "what documents do we have?" answer lists.
             if entry["summary"]:
                 summary = " ".join(entry["summary"].split())
 
@@ -226,48 +357,53 @@ async def tool_document_lookup(
 # -------------------------------------------------------------------
 # Registry
 # -------------------------------------------------------------------
+#
+# Names come from the decorators above, so there is one source of truth
+# for each tool's name, description and arguments.
 
-TOOLS: dict[str, Tool] = {
-    tool.name: tool
-    for tool in [
-        Tool(
-            "semantic_search",
-            "Vector similarity search over all chunks. Good for general "
-            "questions phrased in natural language.",
-            tool_semantic_search,
-        ),
-        Tool(
-            "keyword_search",
-            "BM25 keyword search. Good for exact terms, policy names, "
-            "codes, numbers and rare words.",
-            tool_keyword_search,
-        ),
-        Tool(
-            "hybrid_search",
-            "Semantic and keyword search fused with RRF. A safe default "
-            "when the question mixes concepts and exact terms.",
-            tool_hybrid_search,
-        ),
-        Tool(
-            "hierarchical_search",
-            "Narrows document, then section, then chunk. Good when the "
-            "answer sits in a specific part of a known document.",
-            tool_hierarchical_search,
-        ),
-        Tool(
-            "document_lookup",
-            "List the documents in the library. Use to find out what "
-            "exists.",
-            tool_document_lookup,
-        ),
-    ]
-}
+_ALL = [
+    semantic_search_tool,
+    keyword_search_tool,
+    hybrid_search_tool,
+    hierarchical_search_tool,
+    aggregate_search_tool,
+    web_search_tool,
+    calculate_tool,
+    document_lookup_tool,
+]
+
+
+# Every tool, offered or not. Execution resolves here, so a plan made a
+# moment ago still runs even if a tool has since been switched off.
+TOOLS: dict = {tool_fn.name: tool_fn for tool_fn in _ALL}
+
+
+def _is_offered(name: str) -> bool:
+    """Whether the planner may choose this tool right now.
+
+    An unusable tool left in the catalogue is worse than a missing one:
+    the planner picks it, the call returns nothing, and the agent spends
+    a retry discovering that.
+    """
+
+    if name != "web_search":
+        return True
+
+    return web.is_available() and bool(get_setting("web.enabled"))
+
+
+def available_tools() -> dict:
+    return {
+        name: tool_fn
+        for name, tool_fn in TOOLS.items()
+        if _is_offered(name)
+    }
 
 
 def tool_catalogue() -> str:
     """Tool names and descriptions, for the planner prompt."""
 
     return "\n".join(
-        f"- {tool.name}: {tool.description}"
-        for tool in TOOLS.values()
+        f"- {name}: {' '.join(tool_fn.description.split())}"
+        for name, tool_fn in available_tools().items()
     )

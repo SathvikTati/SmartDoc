@@ -38,6 +38,16 @@ class AskRequest(BaseModel):
         description=SCOPE_DESCRIPTION,
     )
 
+    chat_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Continue an existing conversation. The question is resolved "
+            "against its previous turns, so a follow-up like \"what about "
+            "sick leave?\" is understood. Omit to start a new chat; the "
+            "id is returned in the response metadata either way."
+        ),
+    )
+
 
 class CompareRequest(BaseModel):
     question: str = Field(

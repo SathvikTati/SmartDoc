@@ -54,6 +54,21 @@ class PromptUpdate(BaseModel):
 # Query history
 # -------------------------------------------------------------------
 
+class ChatSummary(BaseModel):
+    id: UUID
+    title: str
+    turn_count: int
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChatPage(BaseModel):
+    total: int
+    chats: list[ChatSummary]
+
+
 class QueryRunSummary(BaseModel):
     """Enough to render a history list without shipping every chunk."""
 
@@ -67,6 +82,14 @@ class QueryRunSummary(BaseModel):
     latency_ms: float | None = None
     retrieval_method: str | None = None
     created_at: UtcDatetime
+
+    # Conversation position. `relation` is new_topic | follow_up, and
+    # `standalone_question` is what retrieval actually ran on.
+    chat_id: UUID | None = None
+    turn_index: int = 0
+    relation: str | None = None
+    standalone_question: str | None = None
+    context_strategy: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -83,3 +106,11 @@ class QueryRunDetail(QueryRunSummary):
 class QueryRunPage(BaseModel):
     total: int
     runs: list[QueryRunSummary]
+
+
+class ChatDetail(BaseModel):
+    id: UUID
+    title: str
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+    turns: list[QueryRunDetail]

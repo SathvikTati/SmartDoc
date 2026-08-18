@@ -18,7 +18,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from port6.services.db.database import SessionLocal
-from port6.services.model.models import QueryRun
+from port6.services.model.models import Chat, QueryRun
 from port6.services.rag.base import RagResult
 from port6.services.settings.defaults import PROMPT_DEFAULTS
 from port6.services.settings.service import get_int, prompt_version
@@ -52,13 +52,23 @@ def record_run(
     mode: str,
     top_k: int,
     result: RagResult,
+    chat_id: str | None = None,
+    turn_index: int = 0,
+    resolution: dict | None = None,
 ) -> str | None:
     """Store one answered question. Returns the run id, or None on failure."""
+
+    resolution = resolution or {}
 
     db = SessionLocal()
 
     try:
         run = QueryRun(
+            chat_id=chat_id,
+            turn_index=turn_index,
+            relation=resolution.get("relation"),
+            standalone_question=resolution.get("standalone_question"),
+            context_strategy=resolution.get("strategy"),
             question=question,
             mode=mode,
             top_k=top_k,
@@ -167,14 +177,58 @@ def delete_run(
 ) -> None:
 
     run = get_run(db, run_id)
+    chat_id = run.chat_id
 
     db.delete(run)
     db.commit()
 
+    # A conversation with no turns left is not a conversation. Without
+    # this the sidebar kept listing chats whose questions had all been
+    # deleted — the cascade only runs chat -> runs, never the reverse.
+    if chat_id is not None:
+        prune_empty_chats(db, chat_id)
+
 
 def clear_runs(db: Session) -> int:
+    """Delete every question, and the conversations they belonged to."""
 
     removed = db.query(QueryRun).delete()
+
+    # Same reason: clearing history has to clear the chats too, or the
+    # UI keeps showing conversations that contain nothing.
+    db.query(Chat).delete()
+
     db.commit()
 
     return removed
+
+
+def prune_empty_chats(
+    db: Session,
+    chat_id: UUID | None = None,
+) -> int:
+    """Remove conversations that have no turns left.
+
+    Scoped to one chat after a delete; unscoped as a sweep for rows left
+    behind before this was handled.
+    """
+
+    query = db.query(Chat).filter(
+        ~db.query(QueryRun)
+        .filter(QueryRun.chat_id == Chat.id)
+        .exists()
+    )
+
+    if chat_id is not None:
+        query = query.filter(Chat.id == chat_id)
+
+    empty = query.all()
+
+    for chat in empty:
+        db.delete(chat)
+
+    if empty:
+        db.commit()
+        logger.info("Removed %d conversation(s) with no turns", len(empty))
+
+    return len(empty)

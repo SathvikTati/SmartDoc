@@ -10,38 +10,37 @@ import {
 import * as api from '@/lib/api'
 
 /**
- * Query history, read from the server.
+ * Conversations and their turns, read from the server.
  *
- * It used to live in this component's state, which meant a refresh threw
- * away everything you had asked. The API stores each run with its full
- * result, so the list here is a view of that, and opening an old run
- * fetches exactly what it returned at the time.
+ * A chat is the unit a follow-up resolves against, so the UI works in
+ * chats rather than in isolated questions — but a chat is still a set of
+ * discrete investigations, each with its own answer, sources and trace.
+ * It is not a chat transcript: nothing is collapsed into a running stream.
  *
- * A run is `{ id, question, mode, top_k, answered, citation_count,
- * chunk_count, latency_ms, created_at }`; `result` arrives only on open.
+ * `chats`   — summaries for the sidebar and history
+ * `current` — `{ id, title, turns[] }`, each turn a full stored result
  */
 const InvestigationsContext = createContext(null)
 
 const PAGE_SIZE = 50
 
 export function InvestigationsProvider({ children }) {
-  const [runs, setRuns] = useState([])
+  const [chats, setChats] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  // The run being viewed, with its full stored result.
   const [current, setCurrent] = useState(null)
   const [opening, setOpening] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
-      const page = await api.listHistory({ limit: PAGE_SIZE })
-      setRuns(page.runs)
+      const page = await api.listChats({ limit: PAGE_SIZE })
+      setChats(page.chats)
       setTotal(page.total)
       setError(null)
     } catch (caught) {
-      setError(caught?.message ?? 'Could not load history')
+      setError(caught?.message ?? 'Could not load conversations')
     } finally {
       setLoading(false)
     }
@@ -52,53 +51,69 @@ export function InvestigationsProvider({ children }) {
   }, [refresh])
 
   /**
-   * Show a result that was just produced.
+   * Append a just-produced answer to the open chat.
    *
-   * The answer is already in hand, so this displays it immediately rather
-   * than re-fetching it, and refreshes the list behind it.
+   * The result is already in hand, so this shows it immediately rather
+   * than re-fetching the whole conversation.
    */
-  const showResult = useCallback(
-    (run) => {
-      setCurrent(run)
+  const appendTurn = useCallback(
+    (turn) => {
+      setCurrent((existing) => {
+        const chatId = turn.result?.metadata?.chat_id
+
+        // A new chat, or a turn that belongs to the one already open.
+        if (!existing || existing.id !== chatId) {
+          return { id: chatId, title: turn.question, turns: [turn] }
+        }
+
+        return { ...existing, turns: [...existing.turns, turn] }
+      })
+
       void refresh()
     },
     [refresh],
   )
 
-  const open = useCallback(async (id) => {
+  const open = useCallback(async (chatId) => {
     setOpening(true)
     setError(null)
 
     try {
-      const run = await api.getHistoryRun(id)
+      const chat = await api.getChat(chatId)
 
       setCurrent({
-        id: run.id,
-        question: run.question,
-        mode: run.mode,
-        topK: run.top_k,
-        result: run.result,
-        askedAt: run.created_at,
-        promptVersions: run.prompt_versions,
+        id: chat.id,
+        title: chat.title,
+        turns: chat.turns.map((run) => ({
+          id: run.id,
+          question: run.question,
+          mode: run.mode,
+          topK: run.top_k,
+          result: run.result,
+          askedAt: run.created_at,
+          relation: run.relation,
+          standaloneQuestion: run.standalone_question,
+          contextStrategy: run.context_strategy,
+        })),
       })
     } catch (caught) {
-      setError(caught?.message ?? 'Could not open that question')
+      setError(caught?.message ?? 'Could not open that conversation')
     } finally {
       setOpening(false)
     }
   }, [])
 
   const remove = useCallback(
-    async (id) => {
-      // Optimistic: the row disappears immediately, and a failed delete
-      // is corrected by the refresh below.
-      setRuns((existing) => existing.filter((run) => run.id !== id))
-      setCurrent((run) => (run?.id === id ? null : run))
+    async (chatId) => {
+      // Optimistic: the row disappears at once, and a failed delete is
+      // corrected by the refresh below.
+      setChats((existing) => existing.filter((chat) => chat.id !== chatId))
+      setCurrent((chat) => (chat?.id === chatId ? null : chat))
 
       try {
-        await api.deleteHistoryRun(id)
+        await api.deleteChat(chatId)
       } catch (caught) {
-        setError(caught?.message ?? 'Could not delete that question')
+        setError(caught?.message ?? 'Could not delete that conversation')
       }
 
       await refresh()
@@ -106,43 +121,30 @@ export function InvestigationsProvider({ children }) {
     [refresh],
   )
 
-  const clear = useCallback(async () => {
-    try {
-      await api.clearHistory()
-      setCurrent(null)
-    } catch (caught) {
-      setError(caught?.message ?? 'Could not clear history')
-    }
-
-    await refresh()
-  }, [refresh])
-
   const value = useMemo(
     () => ({
-      runs,
+      chats,
       total,
       loading,
       opening,
       error,
       current,
-      showResult,
+      appendTurn,
       open,
       startNew: () => setCurrent(null),
       remove,
-      clear,
       refresh,
     }),
     [
-      runs,
+      chats,
       total,
       loading,
       opening,
       error,
       current,
-      showResult,
+      appendTurn,
       open,
       remove,
-      clear,
       refresh,
     ],
   )

@@ -6,7 +6,7 @@ import { Breadcrumbs } from './Breadcrumbs'
  */
 export function Header({ crumbs, actions }) {
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-line bg-surface px-5">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-header px-5">
       <Breadcrumbs items={crumbs} />
       {actions && (
         <div className="flex shrink-0 items-center gap-1.5">{actions}</div>

@@ -7,6 +7,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
+    ForeignKey,
     Integer,
     String,
     Text,
@@ -222,6 +223,46 @@ class Prompt(Base):
     )
 
 
+class Chat(Base):
+    """One conversation.
+
+    A chat is the unit a follow-up is resolved against: "what about sick
+    leave?" only means something relative to the turns before it. Runs
+    outside a chat still work — every question creates one implicitly, so
+    a caller never has to manage this to ask something.
+    """
+
+    __tablename__ = "chats"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    # Taken from the first question, so a chat is recognisable in a list
+    # without opening it.
+    title = Column(
+        Text,
+        nullable=False,
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+    # Bumped on every turn, so chats sort by recent activity rather than
+    # by when they were started.
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+
 class QueryRun(Base):
     """One question and everything the system did to answer it.
 
@@ -238,9 +279,43 @@ class QueryRun(Base):
         default=uuid4,
     )
 
+    chat_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("chats.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    # 0 for the first question in a chat.
+    turn_index = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+
     question = Column(
         Text,
         nullable=False,
+    )
+
+    # "new_topic" | "follow_up". How the question was read in context.
+    relation = Column(
+        String(20),
+        nullable=True,
+    )
+
+    # A follow-up rewritten to stand on its own, which is what retrieval
+    # actually ran on. Null when the question already stood alone.
+    standalone_question = Column(
+        Text,
+        nullable=True,
+    )
+
+    # "fresh" | "combine" | "reuse" — what was done about prior context.
+    context_strategy = Column(
+        String(20),
+        nullable=True,
     )
 
     mode = Column(

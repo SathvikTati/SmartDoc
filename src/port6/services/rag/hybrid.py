@@ -17,6 +17,12 @@ from __future__ import annotations
 import logging
 import time
 
+from port6.services.rag.aggregation import (
+    build_grouped_context,
+    coverage_search,
+    is_aggregation_question,
+    matched_pattern,
+)
 from port6.services.rag.base import RagResult, RetrievedChunk
 from port6.services.rag.generation import generate_answer
 from port6.services.rag.hierarchical import hierarchical_search
@@ -25,6 +31,7 @@ from port6.services.rag.retrievers import (
     keyword_search,
     semantic_search,
 )
+from port6.services.settings.service import get_setting
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +75,12 @@ async def run(
 ) -> RagResult:
 
     started = time.perf_counter()
+
+    # A question about the library as a whole needs breadth, not depth.
+    # Ordinary top-k can return five chunks from one document, which makes
+    # "which documents mention X" unanswerable however it is prompted.
+    if get_setting("aggregation.enabled") and is_aggregation_question(question):
+        return await _run_aggregated(question, started, document_ids)
 
     # Retrieve wider than top_k so fusion has candidates to choose between.
     candidate_k = max(top_k * 2, 8)
@@ -163,6 +176,80 @@ async def run(
             "semantic_matches": _summarise(semantic_chunks),
             "keyword_matches": _summarise(keyword_chunks),
             "matched_by_both": _summarise(both),
+        },
+    )
+
+
+async def _run_aggregated(
+    question: str,
+    started: float,
+    document_ids: list[str] | None,
+) -> RagResult:
+    """Answer by covering documents rather than ranking chunks."""
+
+    coverage = await coverage_search(question, document_ids=document_ids)
+
+    chunks = coverage["chunks"]
+
+    result = await generate_answer(
+        question,
+        chunks,
+        prompt_name="aggregate_answer",
+        context_builder=build_grouped_context,
+    )
+
+    documents = coverage["documents"]
+
+    return RagResult(
+        question=question,
+        answer=result["answer"],
+        answered=result["answered"],
+        citations=result["citations"],
+        retrieved_chunks=chunks,
+        retrieval_method=(
+            "cross-document aggregation: best chunks from each matching "
+            "document, grouped by document"
+        ),
+        latency_ms=round((time.perf_counter() - started) * 1000, 2),
+        metadata={
+            "mode": "hybrid",
+            "aggregated": True,
+            "documents_covered": len(documents),
+            "chunks_retrieved": len(chunks),
+            "scoped_to_documents": len(document_ids) if document_ids else 0,
+        },
+        debug={
+            "stages": [
+                {
+                    "name": "aggregation_detected",
+                    "detail": (
+                        "question asks about the library as a whole "
+                        f"(matched {matched_pattern(question)!r})"
+                    ),
+                },
+                {
+                    "name": "coverage_retrieval",
+                    "detail": (
+                        f"topic {coverage['topic_terms']}; "
+                        f"{coverage['semantic_candidates']} semantic + "
+                        f"{coverage['keyword_candidates']} keyword candidates, "
+                        f"grouped into {len(documents)} document(s); "
+                        f"{coverage['documents_excluded']} document(s) had no "
+                        "keyword match and were excluded"
+                    ),
+                    "results": len(chunks),
+                },
+                {
+                    "name": "answer_generation",
+                    "detail": f"{len(result['citations'])} citations",
+                },
+            ],
+            "documents_covered": documents,
+            "note": (
+                "Retrieved for breadth rather than depth: each document "
+                "contributes its best chunks, so no single document can "
+                "crowd the others out of the answer."
+            ),
         },
     )
 

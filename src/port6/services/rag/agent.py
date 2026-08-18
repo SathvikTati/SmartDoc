@@ -34,9 +34,18 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from port6.services.llm.service import get_chat_model
+from port6.services.rag.aggregation import (
+    build_grouped_context,
+    group_by_document,
+    is_aggregation_question,
+)
 from port6.services.rag.base import RagResult, RetrievedChunk
-from port6.services.rag.generation import generate_answer
-from port6.services.rag.tools import TOOLS, tool_catalogue
+from port6.services.rag.generation import build_context, generate_answer
+from port6.services.rag.tools import (
+    TOOLS,
+    available_tools,
+    tool_catalogue,
+)
 from port6.services.rag.validation import validate_evidence
 from port6.services.settings.service import get_int, get_prompt
 
@@ -72,6 +81,13 @@ class AgentState(TypedDict, total=False):
     validation_result: Annotated[dict, _keep_last]
     attempts: Annotated[int, _keep_last]
 
+    # True once a coverage tool has run, which changes how the context is
+    # trimmed and how the answer is asked for.
+    aggregated: Annotated[bool, _keep_last]
+
+    # True once the web has been tried, so the fallback below runs once.
+    web_attempted: Annotated[bool, _keep_last]
+
     final_context: Annotated[list[RetrievedChunk], _keep_last]
     answer: Annotated[str, _keep_last]
     answered: Annotated[bool, _keep_last]
@@ -82,6 +98,8 @@ class AgentState(TypedDict, total=False):
 
 def rule_based_plan(
     attempt: int,
+    query: str = "",
+    web_pending: bool = False,
 ) -> tuple[list[str], str]:
     """Deterministic fallback, and the retry strategy.
 
@@ -90,10 +108,39 @@ def rule_based_plan(
     widen rather than to re-plan.
     """
 
+    # A library-wide question needs breadth on every attempt. Widening to
+    # a depth-ranked hybrid sweep would replace the per-document coverage
+    # with the best chunks overall — the exact failure aggregation exists
+    # to prevent.
+    if is_aggregation_question(query):
+        return (
+            ["aggregate_search"],
+            "Question is about the library as a whole; covering each "
+            "matching document.",
+        )
+
     if attempt > 0:
         # The first attempt did not find enough; cast wider.
+        #
+        # This is also the only place web search is reached by rule. Its
+        # description says "use only when the documents cannot answer",
+        # and the planner decides *before* retrieval runs, so it cannot
+        # know that. A failed attempt is the evidence — reaching outside
+        # the library becomes a consequence of the documents coming up
+        # short rather than a guess made up front.
+        widened = ["hybrid_search", "keyword_search"]
+
+        if "web_search" in available_tools() and web_pending:
+            widened = ["web_search", "hybrid_search"]
+
+            return (
+                widened,
+                "The documents did not answer this; widening the search "
+                "and checking the web.",
+            )
+
         return (
-            ["hybrid_search", "keyword_search"],
+            widened,
             "First attempt found thin evidence; widening to a "
             "full hybrid sweep.",
         )
@@ -175,6 +222,12 @@ async def node_retrieval_planner(state: AgentState) -> dict:
     plan = None
 
     # The retry is a deliberate widening, so it skips the model.
+    #
+    # `attempts` alone identifies the first pass: tool_execution
+    # increments it, so any re-entry — including the web fallback — sees
+    # a non-zero value. Testing `answered` here instead was a bug:
+    # LangGraph initialises the bool channel to False, so the check never
+    # passed and every question silently used the rule-based plan.
     if attempt == 0:
         plan = await plan_with_model(
             state["query"],
@@ -182,7 +235,19 @@ async def node_retrieval_planner(state: AgentState) -> dict:
         )
 
     if plan is None:
-        tools, reason = rule_based_plan(attempt)
+        tools, reason = rule_based_plan(
+            attempt,
+            state["query"],
+            # True only once generation has actually run and reported
+            # that the documents do not contain the answer. `answer`
+            # being set is what distinguishes that from the channel's
+            # initial value.
+            web_pending=(
+                bool(state.get("answer"))
+                and state.get("answered") is False
+                and not state.get("web_attempted")
+            ),
+        )
         source = "rules"
 
     else:
@@ -223,6 +288,9 @@ async def node_tool_execution(state: AgentState) -> dict:
     # chunk id -> [(tool, rank within that tool's results)]
     tool_ranks: dict[str, list[tuple[str, int]]] = {}
 
+    aggregated = bool(state.get("aggregated"))
+    web_attempted = bool(state.get("web_attempted"))
+
     for name in state["selected_tools"]:
 
         tool = TOOLS.get(name)
@@ -231,10 +299,14 @@ async def node_tool_execution(state: AgentState) -> dict:
             continue
 
         try:
-            outcome = await tool.run(
-                query=state["query"],
-                top_k=max(top_k * 2, 8),
-                document_ids=state.get("document_ids") or None,
+            # ainvoke rather than calling the function: the @tool wrapper
+            # validates the arguments against its generated schema.
+            outcome = await tool.ainvoke(
+                {
+                    "query": state["query"],
+                    "top_k": max(top_k * 2, 8),
+                    "document_ids": state.get("document_ids") or None,
+                }
             )
 
         except Exception as exc:
@@ -261,6 +333,12 @@ async def node_tool_execution(state: AgentState) -> dict:
                 "info": outcome.get("info") or {},
             }
         )
+
+        if (outcome.get("info") or {}).get("aggregated"):
+            aggregated = True
+
+        if name == "web_search":
+            web_attempted = True
 
         for key, value in (outcome.get("info") or {}).items():
             metadata.setdefault(key, value)
@@ -309,6 +387,8 @@ async def node_tool_execution(state: AgentState) -> dict:
 
     return {
         "retrieved_chunks": chunks,
+        "aggregated": aggregated,
+        "web_attempted": web_attempted,
         "tool_runs": [
             *(state.get("tool_runs") or []),
             *runs,
@@ -376,6 +456,36 @@ async def node_context_builder(state: AgentState) -> dict:
 
     top_k = state.get("top_k", 5)
 
+    # Coverage is the point of an aggregation answer, and a flat top_k cut
+    # destroys it: eight chunks spanning four documents were being trimmed
+    # to the five best, which collapsed back to two documents. Trim per
+    # document instead, so breadth survives the context builder.
+    if state.get("aggregated"):
+        ordered = group_by_document(
+            chunks,
+            chunks_per_document=get_int("aggregation.chunks_per_document"),
+            max_documents=get_int("aggregation.max_documents"),
+        )
+
+        for position, chunk in enumerate(ordered, start=1):
+            chunk.number = position
+
+        return {
+            "final_context": ordered,
+            "stages": [
+                *state.get("stages", []),
+                {
+                    "name": "context_builder",
+                    "detail": (
+                        f"kept {len(ordered)} of {len(chunks)} chunks, "
+                        f"covering "
+                        f"{len({c.document_id for c in ordered})} document(s)"
+                    ),
+                    "results": len(ordered),
+                },
+            ],
+        }
+
     def sort_key(chunk: RetrievedChunk):
         # Fused rank first — it is the only figure comparable across tools.
         # Agreement between tools breaks ties, and the raw score is a last
@@ -429,7 +539,17 @@ async def node_answer_generation(state: AgentState) -> dict:
             ],
         }
 
-    result = await generate_answer(state["query"], chunks)
+    aggregated = bool(state.get("aggregated"))
+    web_attempted = bool(state.get("web_attempted"))
+
+    result = await generate_answer(
+        state["query"],
+        chunks,
+        # Same guards either way; only the instruction and how the sources
+        # are laid out change.
+        prompt_name="aggregate_answer" if aggregated else "answer_generation",
+        context_builder=build_grouped_context if aggregated else build_context,
+    )
 
     return {
         "answer": result["answer"],
@@ -452,6 +572,34 @@ async def node_answer_generation(state: AgentState) -> dict:
 # -------------------------------------------------------------------
 # Graph
 # -------------------------------------------------------------------
+
+def route_after_answer(state: AgentState) -> str:
+    """Try the web only once the documents have demonstrably failed.
+
+    Evidence validation cannot make this call: it is lexical, and a
+    question like "what is the UK statutory maternity entitlement?" shares
+    every key term with an HR policy that does not contain the figure. It
+    scores 100% and passes.
+
+    The generator is the one that knows. `answered: false` means it read
+    the sources and the answer was not in them — which is exactly the
+    condition `web_search` is documented for, and the only honest trigger
+    for reaching outside the library.
+    """
+
+    if state.get("answered"):
+        return END
+
+    if state.get("web_attempted"):
+        return END
+
+    if "web_search" not in available_tools():
+        return END
+
+    logger.info("Documents did not answer; falling back to the web")
+
+    return "retrieval_planner"
+
 
 def build_graph():
 
@@ -477,7 +625,15 @@ def build_graph():
     )
 
     graph.add_edge("context_builder", "answer_generation")
-    graph.add_edge("answer_generation", END)
+
+    graph.add_conditional_edges(
+        "answer_generation",
+        route_after_answer,
+        {
+            "retrieval_planner": "retrieval_planner",
+            END: END,
+        },
+    )
 
     return graph.compile()
 

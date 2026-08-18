@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 
 from port6.services.llm.service import get_chat_model
+from port6.services.rag.aggregation import SCAFFOLDING
 from port6.services.rag.base import RetrievedChunk
 from port6.services.rag.generation import build_context
 from port6.services.rag.retrievers import tokenize
@@ -40,6 +41,14 @@ STOPWORDS = {
     "gets", "got", "there", "here", "any", "all", "some", "every", "each",
     "policy", "document", "documents",
 }
+
+
+# "Which documents mention probation?" scores on {mention, probation}, and
+# "mention" never appears in a policy — so a perfect retrieval measured
+# 50% and fell into the band where the model is asked, which then rejected
+# it and cost a retry. The words that frame a question are not evidence
+# that it was answered.
+SCORED_AGAINST = STOPWORDS | SCAFFOLDING
 
 
 class ValidationResult:
@@ -71,7 +80,7 @@ def keyword_overlap(
     query_terms = {
         token
         for token in tokenize(query)
-        if token not in STOPWORDS and len(token) > 2
+        if token not in SCORED_AGAINST and len(token) > 2
     }
 
     if not query_terms:

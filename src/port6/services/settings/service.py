@@ -49,10 +49,13 @@ class InvalidPrompt(ValueError):
 # -------------------------------------------------------------------
 
 def seed(db: Session | None = None) -> None:
-    """Insert any default that has no row yet.
+    """Bring the database in line with the shipped defaults.
 
-    Only ever inserts. An existing row is left exactly as it is, so an
-    edit is never silently reverted by a restart.
+    Missing rows are inserted. An existing row that still matches its
+    shipped default follows the new one, so a release can improve a
+    prompt or change a default and have it reach installs that already
+    ran. A row that has been *edited* is never touched — that edit is the
+    reason these live in the database.
     """
 
     owned = db is None
@@ -60,46 +63,102 @@ def seed(db: Session | None = None) -> None:
 
     try:
         existing_settings = {
-            row.key
-            for row in db.query(Setting.key).all()
+            row.key: row
+            for row in db.query(Setting).all()
         }
 
         for key, spec in SETTING_DEFAULTS.items():
 
-            if key in existing_settings:
+            row = existing_settings.get(key)
+
+            if row is None:
+                db.add(
+                    Setting(
+                        key=key,
+                        value=spec["value"],
+                        default_value=spec["value"],
+                        description=spec.get("description"),
+                    )
+                )
                 continue
 
-            db.add(
-                Setting(
-                    key=key,
-                    value=spec["value"],
-                    default_value=spec["value"],
-                    description=spec.get("description"),
+            # Same rule as prompts: a release can change a shipped
+            # default, and insert-only seeding would never deliver it.
+            # An *unedited* row follows the new default; an edited one is
+            # left alone, since the edit is why settings are in the
+            # database at all.
+            unedited = row.value == row.default_value
+            changed = row.default_value != spec["value"]
+
+            # Keep the shipped value current either way, so "revert"
+            # always means "back to this release".
+            row.default_value = spec["value"]
+            row.description = spec.get("description")
+
+            if changed and unedited:
+                row.value = spec["value"]
+
+                logger.info(
+                    "Setting %s advanced to the shipped default (%r)",
+                    key,
+                    spec["value"],
                 )
-            )
 
         existing_prompts = {
-            row.name
-            for row in db.query(Prompt.name).all()
+            row.name: row
+            for row in db.query(Prompt).all()
         }
 
         for name, spec in PROMPT_DEFAULTS.items():
 
-            if name in existing_prompts:
+            row = existing_prompts.get(name)
+
+            if row is None:
+                db.add(
+                    Prompt(
+                        name=name,
+                        system=spec["system"],
+                        human=spec["human"],
+                        default_system=spec["system"],
+                        default_human=spec["human"],
+                        variables=spec["variables"],
+                        description=spec.get("description"),
+                        version=1,
+                    )
+                )
                 continue
 
-            db.add(
-                Prompt(
-                    name=name,
-                    system=spec["system"],
-                    human=spec["human"],
-                    default_system=spec["system"],
-                    default_human=spec["human"],
-                    variables=spec["variables"],
-                    description=spec.get("description"),
-                    version=1,
-                )
+            # A release can improve a shipped prompt, and insert-only
+            # seeding would never deliver it. So an *unedited* row follows
+            # the new default, while an edited one is left alone — the
+            # edit is the whole reason prompts are in the database.
+            unedited = (
+                row.system == row.default_system
+                and row.human == row.default_human
             )
+
+            changed = (
+                row.default_system != spec["system"]
+                or row.default_human != spec["human"]
+            )
+
+            # Keep the shipped text current either way, so "reset" always
+            # means "back to this release".
+            row.default_system = spec["system"]
+            row.default_human = spec["human"]
+            row.variables = spec["variables"]
+            row.description = spec.get("description")
+
+            if changed and unedited:
+                row.system = spec["system"]
+                row.human = spec["human"]
+                row.version = (row.version or 1) + 1
+
+                logger.info(
+                    "Prompt %s advanced to the shipped default (v%d)",
+                    name,
+                    row.version,
+                )
 
         db.commit()
 

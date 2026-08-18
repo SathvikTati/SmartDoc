@@ -72,7 +72,10 @@ The Streamlit app below is retained as an internal debugging surface.
 
 | [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 250 | The shipped value for every setting and prompt. Seeded into the database on startup, insert-only, so an edit survives a restart. |
 | [`settings/service.py`](src/port6/services/settings/service.py) | 430 | Reads and writes them, cached in process and invalidated on write. `_check_variables` rejects a prompt edit that drops a placeholder the pipeline supplies — that failure would otherwise surface as a confidently wrong answer. |
-| [`history/service.py`](src/port6/services/history/service.py) | 190 | Records each answered question with its full result, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
+| [`history/service.py`](src/port6/services/history/service.py) | 200 | Records each answered question with its full result, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
+| [`history/chats.py`](src/port6/services/history/chats.py) | 300 | Conversations. Starts or finds the chat a question belongs to, loads the recent turns a follow-up is resolved against, and rebuilds the previous turn's chunks from its stored result. |
+| [`rag/conversation.py`](src/port6/services/rag/conversation.py) | 330 | Decides whether a question continues the conversation or starts a new topic, rewrites a follow-up to stand alone, and picks `fresh` / `combine` / `reuse`. Rules first so most questions cost no model call, and both the rules and the fallback are biased toward ignoring prior context. |
+| [`rag/aggregation.py`](src/port6/services/rag/aggregation.py) | 260 | Cross-document questions. Detects them, separates the topic from the asking-about-the-library scaffolding, retrieves for coverage rather than depth, and groups the context by document. |
 | [`llm/errors.py`](src/port6/services/llm/errors.py) | 215 | Classifies a failure as provider / parse / storage / unknown, by exception name and message rather than by importing provider SDKs. Turns "processing failed" into "your API key expired", and says whether retrying will help. |
 
 ---

@@ -14,7 +14,15 @@ import time
 
 from port6.services.llm.errors import classify as classify_provider_error
 from port6.services.rag import agent, hybrid, naive
-from port6.services.rag.base import RagMode, RagResult
+from port6.services.rag.base import RagMode, RagResult, RetrievedChunk
+from port6.services.rag.conversation import (
+    REUSE,
+    Resolution,
+    merge_context,
+    resolve,
+)
+from port6.services.rag.generation import generate_answer
+from port6.services.settings.service import get_int, get_setting
 
 
 logger = logging.getLogger(__name__)
@@ -149,3 +157,149 @@ async def compare_modes(
         )
 
     return results
+
+
+# -------------------------------------------------------------------
+# Conversational queries
+# -------------------------------------------------------------------
+
+async def query_in_chat(
+    question: str,
+    turns: list[dict],
+    previous_chunks: list[RetrievedChunk],
+    mode: str | RagMode = RagMode.HYBRID,
+    top_k: int = 5,
+    document_ids: list[str] | None = None,
+) -> tuple[RagResult, Resolution]:
+    """Answer a question in the context of the conversation it arrived in.
+
+    Resolution decides what retrieval sees:
+
+    - a new topic searches the question as written and ignores everything
+      before it, which is the behaviour that keeps an unrelated question
+      from inheriting the wrong documents
+    - a follow-up is rewritten to stand on its own, searched on that, and
+      merged with a few chunks from the previous turn
+    - `reuse` answers from the previous turn's chunks without retrieving,
+      for questions that are about the material rather than the subject
+    """
+
+    if not get_setting("conversation.enabled") or not turns:
+        result = await query(
+            question,
+            mode=mode,
+            top_k=top_k,
+            document_ids=document_ids,
+        )
+        return result, Resolution(
+            relation="new_topic",
+            strategy="fresh",
+            search_question=question,
+            reason="Conversation resolution not applied.",
+            method="disabled" if turns else "no-history",
+        )
+
+    resolution = await resolve(question, turns)
+
+    logger.info(
+        "Conversation: %s / %s (%s) -> %r",
+        resolution.relation,
+        resolution.strategy,
+        resolution.method,
+        resolution.search_question,
+    )
+
+    # "Explain that more simply" is about what was already retrieved, so
+    # retrieving again would be wasted work and could drift off the thing
+    # being discussed.
+    if resolution.strategy == REUSE and previous_chunks:
+        started = time.perf_counter()
+
+        chunks = list(previous_chunks)
+
+        for position, chunk in enumerate(chunks, start=1):
+            chunk.number = position
+
+        # The rewritten question, not the original: "explain that more
+        # simply" gives the generator nothing to work with, and the
+        # answer prompt would correctly reply NOT_FOUND.
+        generated = await generate_answer(resolution.search_question, chunks)
+
+        result = RagResult(
+            question=question,
+            answer=generated["answer"],
+            answered=generated["answered"],
+            citations=generated["citations"],
+            retrieved_chunks=chunks,
+            retrieval_method="reused the previous turn's sources",
+            latency_ms=round((time.perf_counter() - started) * 1000, 2),
+            metadata={
+                "mode": resolve_mode(mode).value,
+                "top_k": top_k,
+                "chunks_retrieved": len(chunks),
+            },
+            debug={
+                "stages": [
+                    {
+                        "name": "conversation_resolution",
+                        "detail": resolution.reason,
+                    },
+                    {
+                        "name": "context_reuse",
+                        "detail": (
+                            "answered from the previous turn's sources; "
+                            "no retrieval ran"
+                        ),
+                        "results": len(chunks),
+                    },
+                ]
+            },
+        )
+
+        _attach_resolution(result, resolution)
+        return result, resolution
+
+    result = await query(
+        resolution.search_question,
+        mode=mode,
+        top_k=top_k,
+        document_ids=document_ids,
+    )
+
+    # The user asked their question, not the rewritten one.
+    result.question = question
+
+    if resolution.is_follow_up and previous_chunks:
+        result.retrieved_chunks = merge_context(
+            result.retrieved_chunks,
+            previous_chunks,
+            carry_over=get_int("conversation.carry_over_chunks"),
+        )
+
+    _attach_resolution(result, resolution)
+
+    return result, resolution
+
+
+def _attach_resolution(
+    result: RagResult,
+    resolution: Resolution,
+) -> None:
+    """Surface how the question was read, in metadata and the trace."""
+
+    result.metadata["conversation"] = resolution.as_dict()
+
+    stages = result.debug.setdefault("stages", [])
+
+    detail = resolution.reason
+
+    if resolution.standalone_question:
+        detail = f"{detail} Searched as: {resolution.standalone_question!r}"
+
+    stages.insert(
+        0,
+        {
+            "name": "conversation_resolution",
+            "detail": detail,
+        },
+    )

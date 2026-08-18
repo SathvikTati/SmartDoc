@@ -19,8 +19,11 @@ from port6.services.documents.service import (
     get_documents,
     prepare_reprocess,
 )
+from port6.services.history import chats as chat_service
 from port6.services.history import service as history
 from port6.services.schemas.admin import (
+    ChatDetail,
+    ChatPage,
     PromptResponse,
     PromptUpdate,
     QueryRunDetail,
@@ -50,7 +53,12 @@ from port6.services.schemas.query import (
 )
 from port6.services.ingestion.service import process_document
 from port6.services.rag.base import RagResult
-from port6.services.rag.system import compare_modes, query as rag_query
+from port6.services.rag.system import (
+    compare_modes,
+    query as rag_query,
+    query_in_chat,
+)
+from port6.services.settings.service import get_int
 from port6.services.retrieval.service import search
 
 
@@ -296,15 +304,43 @@ async def search_documents(
 async def ask(
     request: AskRequest,
 ):
-    result = await rag_query(
+    """Answer a question, in the context of its conversation.
+
+    Every question belongs to a chat: one is started if none is given, and
+    its id comes back in the metadata so the next question can continue
+    from it. Prior turns are only applied when the question is judged a
+    follow-up — an unrelated question never inherits the wrong documents.
+    """
+
+    document_ids = (
+        [str(value) for value in request.document_ids]
+        if request.document_ids
+        else None
+    )
+
+    chat_id, turn_index = chat_service.ensure_chat(
+        request.chat_id,
+        request.question,
+    )
+
+    turns = (
+        chat_service.load_turns(
+            chat_id,
+            limit=get_int("conversation.history_turns"),
+        )
+        if turn_index
+        else []
+    )
+
+    result, resolution = await query_in_chat(
         question=request.question,
+        turns=turns,
+        previous_chunks=(
+            chat_service.previous_chunks(chat_id) if turns else []
+        ),
         mode=request.mode,
         top_k=request.top_k,
-        document_ids=(
-            [str(value) for value in request.document_ids]
-            if request.document_ids
-            else None
-        ),
+        document_ids=document_ids,
     )
 
     # Recorded after the fact and best-effort: a history write must never
@@ -314,7 +350,13 @@ async def ask(
         mode=request.mode.value,
         top_k=request.top_k,
         result=result,
+        chat_id=chat_id,
+        turn_index=turn_index,
+        resolution=resolution.as_dict(),
     )
+
+    result.metadata["chat_id"] = chat_id
+    result.metadata["turn_index"] = turn_index
 
     if run_id:
         result.metadata["run_id"] = run_id
@@ -346,6 +388,48 @@ async def ask_compare(
         question=request.question,
         results=results,
     )
+
+
+# -------------------------------------------------------------------
+# Conversations
+# -------------------------------------------------------------------
+
+@app.get(
+    "/chats",
+    response_model=ChatPage,
+)
+async def list_chats(
+    db: db_dependency,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """Conversations, most recently active first."""
+
+    return chat_service.list_chats(db, limit=limit, offset=offset)
+
+
+@app.get(
+    "/chats/{chat_id}",
+    response_model=ChatDetail,
+)
+async def get_chat(
+    chat_id: UUID,
+    db: db_dependency,
+):
+    """One conversation with every turn, in order."""
+
+    return chat_service.chat_turns(db, chat_id)
+
+
+@app.delete(
+    "/chats/{chat_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_chat(
+    chat_id: UUID,
+    db: db_dependency,
+):
+    chat_service.delete_chat(db, chat_id)
 
 
 # -------------------------------------------------------------------

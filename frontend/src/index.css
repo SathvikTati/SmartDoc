@@ -4,19 +4,28 @@
 
 @layer base {
   :root {
-    --canvas: 250 250 251;
+    /* Warm off-white rather than a cool grey: the canvas is the largest
+       surface in the app, and a slight warmth stops long reading sessions
+       feeling clinical. Panels stay pure white so they lift off it. */
+    --canvas: 247 246 240;
     --surface: 255 255 255;
-    --raised: 246 247 249;
+    --raised: 244 243 240;
 
-    --line: 226 229 233;
-    --line-strong: 208 212 218;
+    /* The top bar. Its own token rather than reusing --canvas, so the bar
+       can be tinted without moving the whole page background with it.
+       Note: adding a colour key to tailwind.config.js needs a dev-server
+       restart — the config is read once at startup. */
+    --header: 248 249 250;
 
-    --ink: 23 26 31;
-    --ink-muted: 95 101 110;
-    --ink-subtle: 138 145 154;
+    --line: 229 227 222;
+    --line-strong: 210 207 200;
 
-    --accent: 39 98 214;
-    --accent-hover: 30 82 186;
+    --ink: 26 26 27;
+    --ink-muted: 98 98 102;
+    --ink-subtle: 142 142 147;
+
+    --accent: 37 99 235;
+    --accent-hover: 29 78 216;
     --accent-soft: 234 241 254;
 
     --ok: 22 118 76;

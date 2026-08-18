@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, Globe } from 'lucide-react'
 
 import { Badge } from '@/components/ui/Badge'
 import { FileIcon } from '@/components/FileIcon'
@@ -98,7 +98,11 @@ export function ChunkCard({
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <FileIcon filename={chunk.filename} className="h-3.5 w-3.5" />
+            {chunk.url ? (
+              <Globe className="h-3.5 w-3.5 shrink-0 text-warn" />
+            ) : (
+              <FileIcon filename={chunk.filename} className="h-3.5 w-3.5" />
+            )}
             <span
               className={cn(
                 'truncate text-sm',
@@ -108,6 +112,9 @@ export function ChunkCard({
               {citationLabel(chunk)}
             </span>
 
+            {/* A web result is not one of your documents, and an answer
+                built on it means something different. Say so plainly. */}
+            {chunk.url && <Badge tone="warn">Web</Badge>}
             {!cited && <Badge tone="neutral">Retrieved, unused</Badge>}
             <SourceTags chunk={chunk} />
           </div>
@@ -126,13 +133,27 @@ export function ChunkCard({
               <p className="whitespace-pre-wrap rounded border border-line bg-raised/60 p-2.5 text-xs leading-5 text-ink-muted">
                 {chunk.content}
               </p>
-              <Link
-                to={`/files/${chunk.document_id}`}
-                className="mt-1.5 inline-flex items-center gap-1 rounded text-2xs text-accent hover:underline"
-              >
-                Open {chunk.filename}
-                <ExternalLink className="h-2.5 w-2.5" />
-              </Link>
+              {chunk.url ? (
+                // Never /files/… for a web chunk: there is no document
+                // behind it, and the link would 404.
+                <a
+                  href={chunk.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-1.5 inline-flex max-w-full items-center gap-1 rounded text-2xs text-accent hover:underline"
+                >
+                  <span className="truncate">{chunk.url}</span>
+                  <ExternalLink className="h-2.5 w-2.5 shrink-0" />
+                </a>
+              ) : (
+                <Link
+                  to={`/files/${chunk.document_id}`}
+                  className="mt-1.5 inline-flex items-center gap-1 rounded text-2xs text-accent hover:underline"
+                >
+                  Open {chunk.filename}
+                  <ExternalLink className="h-2.5 w-2.5" />
+                </Link>
+              )}
             </div>
           )}
         </div>

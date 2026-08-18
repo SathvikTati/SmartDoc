@@ -1,6 +1,16 @@
 # PORT-6 Demo
 
-A corpus and a script that show what each retrieval mode does.
+A corpus, a CLI script, and a UI walkthrough.
+
+| | |
+|---|---|
+| [WALKTHROUGH.md](WALKTHROUGH.md) | **Demoing to a person.** Every feature in one pass through the UI, with the exact inputs and the answers this corpus really returns. |
+| [INPUTS.md](INPUTS.md) | The same inputs with no narration — paste from it while you talk. |
+| `run_demo.py` | **Demoing to a terminal.** Uploads the corpus and runs every scenario headless. |
+
+---
+
+## The CLI script
 
 ```bash
 # 1. start the API
@@ -19,7 +29,7 @@ uv run python demo/run_demo.py --skip-upload      # already ingested
 uv run python demo/run_demo.py --reset            # delete demo docs
 ```
 
-First run takes a few minutes: six documents are chunked, embedded, summarised and have their metadata extracted by a local model.
+First run takes a few minutes: every document is chunked, embedded and summarised by a local model.
 
 > **For a clean demo, start with an empty library.** Any other document competes for the top-k slots and may end up cited. The script warns you if it finds any.
 
@@ -27,7 +37,7 @@ First run takes a few minutes: six documents are chunked, embedded, summarised a
 
 ## The corpus
 
-Six documents in four formats, built so every feature has something to bite on.
+Seven documents in four formats, built so every feature has something to bite on.
 
 | File | Format | Contains |
 |---|---|---|
@@ -36,7 +46,8 @@ Six documents in four formats, built so every feature has something to bite on.
 | `travel_policy.md` | Markdown | Booking rules; also mentions probation, so some questions cross documents |
 | `security_policy.docx` | **DOCX** | Real `Heading 1/2/3` styles; codes `SEC-4412`, `SEC-8830`, `ISO 27001` |
 | `employee_handbook.pdf` | **PDF, 3 pages** | Working hours, remote work, grievance procedure (page 3) |
-| `meeting_notes.txt` | Plain text | ALL-CAPS headings, no metadata, deliberately vague |
+| `meeting_notes.txt` | Plain text | ALL-CAPS headings, no structure, deliberately vague |
+| `overtime.txt` | Plain text | An overtime pay formula — exercises the calculator's limits |
 
 ### What each file is for
 
@@ -128,9 +139,21 @@ Shown honestly, because a demo that hides them is not much use.
 
 **The 7B model is the accuracy ceiling, not retrieval.** In several runs the correct chunk ranked first and the validator still called the sources insufficient, triggering an unnecessary retry. A larger model closes most of this gap without any retrieval change.
 
-**Naive often gets the right answer anyway.** With six documents the correct chunk usually ranks first regardless of mode. The difference shows in the *trace*, not always the answer: naive pulls in `meeting_notes.txt` and unrelated text that hybrid's narrowing eliminates before generation. That margin matters as a corpus grows, and the Compare tab is where you can see it.
+**Naive often gets the right answer anyway.** On a corpus this small the correct chunk usually ranks first regardless of mode. The difference shows in the *trace*, not always the answer: naive pulls in `meeting_notes.txt` and unrelated text that hybrid's narrowing eliminates before generation. That margin matters as a corpus grows, and the Compare tab is where you can see it.
 
-**Enumeration is weak.** Questions like *"which documents mention probation?"* retrieve correctly but produce thin answers — there is no cross-document aggregation step. This is the clearest thing to build next.
+**Enumeration now works, and shows the difference between modes.** *"Which documents mention probation?"* is answered by coverage rather than top-k:
+
+```
+NAIVE   saw 2 documents  ->  "policy.pdf | employee_handbook.pdf"
+HYBRID  saw 4 documents  ->  "policy.pdf [1], employee_handbook.pdf [3],
+                              travel_policy.md [5], hr_policy.md [7]"
+```
+
+Naive ranks chunks, so five of them can come from one document and the
+others are never seen. Hybrid detects the question, retrieves the best
+chunks from *each* matching document, and excludes documents with no
+keyword hit on the topic. It is the sharpest demonstration in the demo of
+why the modes differ.
 
 ---
 

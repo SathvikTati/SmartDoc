@@ -7,6 +7,7 @@ export default {
         // Semantic names only. The values live as CSS variables in
         // index.css so a component never hardcodes a hex.
         canvas: 'rgb(var(--canvas) / <alpha-value>)',
+        header: 'rgb(var(--header) / <alpha-value>)',
         surface: 'rgb(var(--surface) / <alpha-value>)',
         raised: 'rgb(var(--raised) / <alpha-value>)',
         line: 'rgb(var(--line) / <alpha-value>)',
@@ -33,6 +34,16 @@ export default {
           'Helvetica Neue',
           'sans-serif',
         ],
+        // A real serif for the one display line on Ask. System faces only,
+        // so nothing is fetched and the page never reflows on load.
+        display: [
+          'Iowan Old Style',
+          'Palatino Linotype',
+          'Palatino',
+          'Georgia',
+          'ui-serif',
+          'serif',
+        ],
         mono: [
           'ui-monospace',
           'SFMono-Regular',
@@ -52,6 +63,9 @@ export default {
         lg: ['16px', { lineHeight: '24px' }],
         xl: ['18px', { lineHeight: '26px' }],
         '2xl': ['22px', { lineHeight: '30px' }],
+        '3xl': ['30px', { lineHeight: '38px' }],
+        // The Ask headline, and the only type this large in the app.
+        display: ['44px', { lineHeight: '52px', letterSpacing: '-0.02em' }],
       },
       borderRadius: {
         DEFAULT: '5px',

@@ -196,7 +196,7 @@ def wait_for_ready(timeout_seconds: int = 1800) -> None:
 
     print(
         f"\n{BOLD}Waiting for ingestion{OFF} "
-        f"{DIM}(chunking, embedding, metadata, summaries){OFF}"
+        f"{DIM}(chunking, embedding, summaries){OFF}"
     )
 
     deadline = time.time() + timeout_seconds

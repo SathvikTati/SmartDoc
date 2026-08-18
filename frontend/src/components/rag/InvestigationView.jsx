@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { PlugZap, SearchX } from 'lucide-react'
+import { Globe, PlugZap, SearchX } from 'lucide-react'
 
 import { Badge } from '@/components/ui/Badge'
 import { Disclosure } from '@/components/ui/Disclosure'
@@ -29,6 +29,10 @@ export function InvestigationView({ result, mode }) {
     () => new Set(result.citations.map((chunk) => chunk.number)),
     [result.citations],
   )
+
+  // An answer citing the web is a different claim from one citing only
+  // the library, so it is stated rather than left to the source list.
+  const webCitations = result.citations.filter((chunk) => chunk.url)
 
   function toggle(chunkId) {
     setExpanded((current) => {
@@ -125,6 +129,22 @@ export function InvestigationView({ result, mode }) {
           </div>
         )}
       </div>
+
+      {webCitations.length > 0 && (
+        <div className="flex max-w-3xl items-start gap-2.5 rounded-md border border-warn/25 bg-warn-soft px-3 py-2.5">
+          <Globe className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-ink">
+              This answer uses the web
+            </p>
+            <p className="mt-0.5 text-sm text-ink-muted">
+              {webCitations.length} of {result.citations.length} cited sources
+              came from the public internet, not from your documents. They are
+              marked <span className="font-medium">Web</span> below.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Sources */}
       {result.citations.length > 0 && (

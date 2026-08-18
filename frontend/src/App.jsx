@@ -6,6 +6,7 @@ import { AskPage } from '@/pages/AskPage'
 import { ComparePage } from '@/pages/ComparePage'
 import { DocumentDetailPage } from '@/pages/DocumentDetailPage'
 import { FilesPage } from '@/pages/FilesPage'
+import { HistoryPage } from '@/pages/HistoryPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { SearchPage } from '@/pages/SearchPage'
 import { DocumentsProvider } from '@/state/DocumentsContext'
@@ -26,6 +27,7 @@ export default function App() {
 
               <Route element={<AppLayout />}>
                 <Route path="/ask" element={<AskPage />} />
+                <Route path="/history" element={<HistoryPage />} />
                 <Route path="/files" element={<FilesPage />} />
                 <Route
                   path="/files/:documentId"
