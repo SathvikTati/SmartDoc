@@ -44,7 +44,7 @@ async def run(
         answer=result["answer"],
         answered=result["answered"],
         citations=result["citations"],
-        retrieved_chunks=chunks,
+        retrieved_chunks=result["chunks"],
         retrieval_method=RETRIEVAL_METHOD,
         latency_ms=round(
             (time.perf_counter() - started) * 1000,
@@ -54,6 +54,11 @@ async def run(
             "mode": "naive",
             "top_k": top_k,
             "chunks_retrieved": len(chunks),
+            # Reported even when the answer reads cleanly, so a figure
+            # chosen over another is visible rather than implied.
+            "conflicts": [
+                conflict.describe() for conflict in result["conflicts"]
+            ],
             "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={

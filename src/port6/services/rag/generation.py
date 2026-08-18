@@ -11,6 +11,15 @@ import re
 
 from port6.services.llm.service import get_chat_model
 from port6.services.rag.base import RetrievedChunk
+from port6.services.rag.calculator import (
+    CALCULATION_DOCUMENT_ID,
+    augment_with_calculation,
+)
+from port6.services.rag.conflict import (
+    context_note,
+    find_conflicts,
+    stamp_upload_times,
+)
 from port6.services.settings.service import get_prompt
 
 
@@ -57,8 +66,19 @@ def build_context(
         if chunk.url:
             header = [f"[{chunk.number}] WEB: {chunk.filename}", chunk.url]
 
+        # Likewise a worked sum: it is evidence, but it came from this
+        # system rather than from anything someone uploaded.
+        elif chunk.document_id == CALCULATION_DOCUMENT_ID:
+            header = [f"[{chunk.number}] CALCULATION"]
+
         else:
             header = [f"[{chunk.number}] {chunk.filename}"]
+
+        # The date is part of the evidence when two documents disagree:
+        # the model is told to prefer the newer, and it can only do that
+        # if it can see which one that is.
+        if chunk.uploaded_at is not None:
+            header.append(f"uploaded {chunk.uploaded_at:%Y-%m-%d}")
 
         if chunk.section_path:
             header.append(f"section: {chunk.section_path}")
@@ -117,6 +137,55 @@ def extract_cited_numbers(
     return cited
 
 
+# Words that already open a question or an instruction. Anything starting
+# with one of these is left exactly as typed.
+_ASKS = {
+    "am", "are", "can", "ci", "compare", "could", "describe", "did", "do",
+    "does", "explain", "find", "give", "how", "is", "list", "may", "might",
+    "must", "name", "outline", "shall", "should", "show", "summarise",
+    "summarize", "tell", "was", "were", "what", "when", "where", "which",
+    "who", "whom", "whose", "why", "will", "would",
+}
+
+# Beyond this it is a sentence, whatever it starts with.
+MAX_TOPIC_WORDS = 6
+
+_WORDS = re.compile(r"[a-zA-Z']+")
+
+
+def as_question(query: str) -> str:
+    """Turn a bare topic into something that can be answered.
+
+    People type "leave policy", not "what is the leave policy?". Retrieval
+    handles that fine — the right chunks come back — but the answer prompt
+    is told to reply NOT_FOUND when the sources do not contain *the
+    answer*, and a topic phrase names no answer to look for. The model
+    reads five relevant chunks and declines.
+
+    Telling the prompt to allow topics helped some of the time and not
+    others, which is the usual outcome of asking a 7B to notice something.
+    Doing it here makes it certain, and it only affects what the generator
+    is asked: retrieval still uses the words as typed, and the question
+    shown back to the reader is unchanged.
+    """
+
+    stripped = (query or "").strip()
+
+    # Already a question, or already an instruction.
+    if "?" in stripped:
+        return stripped
+
+    words = _WORDS.findall(stripped.lower())
+
+    if not words or len(words) > MAX_TOPIC_WORDS:
+        return stripped
+
+    if words[0] in _ASKS:
+        return stripped
+
+    return f"What do the documents say about {stripped}?"
+
+
 async def _invoke(
     chain,
     query: str,
@@ -136,6 +205,42 @@ async def _invoke(
         content = str(content)
 
     return content.strip()
+
+
+def _credit_calculation_sources(
+    citations: list[RetrievedChunk],
+    chunks: list[RetrievedChunk],
+) -> list[RetrievedChunk]:
+    """Follow a cited calculation back to the chunks it was worked from.
+
+    An answer that says "14 days remaining [6]" rests on the chunk holding
+    "22 days accrued" just as much as on the arithmetic, but the model only
+    writes the one marker. Left alone, the document that supplied the
+    figure is reported as retrieved-but-unused — which is exactly backwards
+    for the source doing the work.
+
+    Appended rather than inserted, so the numbering the model wrote still
+    lines up with the sources it named.
+    """
+
+    by_id = {chunk.chunk_id: chunk for chunk in chunks}
+
+    already = {chunk.chunk_id for chunk in citations}
+
+    credited = list(citations)
+
+    for citation in citations:
+        for chunk_id in citation.derived_from:
+
+            source = by_id.get(chunk_id)
+
+            if source is None or chunk_id in already:
+                continue
+
+            credited.append(source)
+            already.add(chunk_id)
+
+    return credited
 
 
 async def generate_answer(
@@ -160,15 +265,45 @@ async def generate_answer(
             "answer": NO_RESULTS_ANSWER,
             "answered": False,
             "citations": [],
+            "chunks": [],
+            "conflicts": [],
         }
+
+    from port6.services.settings.service import get_setting
+
+    # Recency first: the conflict check and the source headers both need
+    # to know when each document was uploaded.
+    conflicts = []
+
+    if get_setting("conflicts.enabled"):
+        stamp_upload_times(chunks)
+        conflicts = find_conflicts(chunks)
+
+    # Before numbering, so the worked sum takes its place in the list the
+    # model cites from. Every mode goes through here, which is why naive
+    # can answer "I have taken 8, how many are left?" without having a
+    # tool-selecting agent in front of it.
+    chunks = await augment_with_calculation(query, chunks)
 
     number_chunks(chunks)
 
     context = context_builder(chunks)
 
+    # Prepended rather than folded into the builder, so the aggregate
+    # layout gets the same warning without reimplementing it.
+    note = context_note(conflicts)
+
+    if note:
+        context = f"{note}\n\n---\n\n{context}"
+
     chain = get_prompt(prompt_name) | get_chat_model()
 
-    answer = await _invoke(chain, query, context)
+    asked = as_question(query)
+
+    if asked != query:
+        logger.info("Asked as a topic; generating for %r", asked)
+
+    answer = await _invoke(chain, asked, context)
 
     # One retry with an explicit nudge; a bare "[2]" is a formatting slip,
     # not a judgement that the sources are unusable.
@@ -183,7 +318,7 @@ async def generate_answer(
         answer = await _invoke(
             chain,
             (
-                f"{query}\n\n"
+                f"{asked}\n\n"
                 "Write the answer as full sentences. Do not reply with "
                 "only citation markers."
             ),
@@ -198,6 +333,8 @@ async def generate_answer(
                 ),
                 "answered": False,
                 "citations": [],
+                "chunks": chunks,
+                "conflicts": conflicts,
             }
 
     if answer.upper().startswith(NOT_FOUND_MARKER):
@@ -211,6 +348,8 @@ async def generate_answer(
             "answer": NOT_FOUND_ANSWER,
             "answered": False,
             "citations": [],
+            "chunks": chunks,
+            "conflicts": conflicts,
         }
 
     by_number = {chunk.number: chunk for chunk in chunks}
@@ -233,6 +372,8 @@ async def generate_answer(
 
         citations.append(chunk)
 
+    citations = _credit_calculation_sources(citations, chunks)
+
     logger.info(
         "Generated answer with %d citations",
         len(citations),
@@ -242,4 +383,12 @@ async def generate_answer(
         "answer": answer,
         "answered": True,
         "citations": citations,
+        # The list the answer was actually generated from, which is not
+        # what the caller passed in: a worked sum may have been added to
+        # it. Callers report this as the retrieved evidence, so the
+        # calculation shows up beside the documents it used.
+        "chunks": chunks,
+        # Reported even when the answer reads cleanly: the reader needs to
+        # know a figure was chosen over another, not just what was chosen.
+        "conflicts": conflicts,
     }

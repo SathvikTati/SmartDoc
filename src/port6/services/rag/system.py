@@ -14,6 +14,7 @@ import time
 
 from port6.services.llm.errors import classify as classify_provider_error
 from port6.services.rag import agent, hybrid, naive
+from port6.services.rag import smalltalk
 from port6.services.rag.base import RagMode, RagResult, RetrievedChunk
 from port6.services.rag.conversation import (
     REUSE,
@@ -52,6 +53,44 @@ def resolve_mode(
         )
 
 
+def smalltalk_result(
+    question: str,
+    reply,
+    mode: RagMode,
+    started: float,
+) -> RagResult:
+    """A pleasantry, answered without touching the index."""
+
+    return RagResult(
+        question=question,
+        answer=reply.answer,
+        # Answered, because it was: there is simply nothing to cite. The
+        # `kind` is what lets the UI drop the evidence panels rather than
+        # showing a reader four empty ones.
+        answered=True,
+        citations=[],
+        retrieved_chunks=[],
+        retrieval_method="no retrieval: conversational message",
+        latency_ms=round((time.perf_counter() - started) * 1000, 2),
+        metadata={
+            "mode": mode.value,
+            "kind": "smalltalk",
+            "smalltalk": reply.kind,
+            "chunks_retrieved": 0,
+        },
+        debug={
+            "stages": [
+                {
+                    "name": "smalltalk",
+                    "detail": (
+                        f"recognised as {reply.kind}; retrieval skipped"
+                    ),
+                }
+            ]
+        },
+    )
+
+
 async def query(
     question: str,
     mode: str | RagMode = RagMode.NAIVE,
@@ -70,6 +109,14 @@ async def query(
     resolved = resolve_mode(mode)
 
     started = time.perf_counter()
+
+    # Before retrieval: "hello" would otherwise embed, return the five
+    # least-unrelated chunks and be refused, which reads as a fault.
+    reply = smalltalk.classify(question)
+
+    if reply is not None:
+        logger.info("Answering %r as %s without retrieving", question, reply.kind)
+        return smalltalk_result(question, reply, resolved, started)
 
     try:
         result = await RUNNERS[resolved](
@@ -184,6 +231,27 @@ async def query_in_chat(
       for questions that are about the material rather than the subject
     """
 
+    reply = smalltalk.classify(question)
+
+    if reply is not None:
+        logger.info("Answering %r as %s without retrieving", question, reply.kind)
+
+        return (
+            smalltalk_result(
+                question,
+                reply,
+                resolve_mode(mode),
+                time.perf_counter(),
+            ),
+            Resolution(
+                relation="new_topic",
+                strategy="fresh",
+                search_question=question,
+                reason=f"Conversational message ({reply.kind}).",
+                method="smalltalk",
+            ),
+        )
+
     if not get_setting("conversation.enabled") or not turns:
         result = await query(
             question,
@@ -230,13 +298,18 @@ async def query_in_chat(
             answer=generated["answer"],
             answered=generated["answered"],
             citations=generated["citations"],
-            retrieved_chunks=chunks,
+            retrieved_chunks=generated["chunks"],
             retrieval_method="reused the previous turn's sources",
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             metadata={
                 "mode": resolve_mode(mode).value,
                 "top_k": top_k,
                 "chunks_retrieved": len(chunks),
+                # Reported even when the answer reads cleanly, so a figure
+                # chosen over another is visible rather than implied.
+                "conflicts": [
+                    conflict.describe() for conflict in generated["conflicts"]
+                ],
             },
             debug={
                 "stages": [

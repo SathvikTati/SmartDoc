@@ -89,6 +89,11 @@ class AgentState(TypedDict, total=False):
     web_attempted: Annotated[bool, _keep_last]
 
     final_context: Annotated[list[RetrievedChunk], _keep_last]
+
+    # Documents that gave different figures for the same thing, already
+    # resolved by upload recency. Surfaced so the answer is not the only
+    # place the disagreement is visible.
+    conflicts: Annotated[list[str], _keep_last]
     answer: Annotated[str, _keep_last]
     answered: Annotated[bool, _keep_last]
     citations: Annotated[list[RetrievedChunk], _keep_last]
@@ -555,6 +560,13 @@ async def node_answer_generation(state: AgentState) -> dict:
         "answer": result["answer"],
         "answered": result["answered"],
         "citations": result["citations"],
+        # Generation may have added a worked sum to the sources, so the
+        # trace reports what the answer actually saw rather than what
+        # retrieval handed over.
+        "final_context": result["chunks"],
+        "conflicts": [
+            conflict.describe() for conflict in result["conflicts"]
+        ],
         "stages": [
             *state.get("stages", []),
             {
@@ -689,6 +701,7 @@ async def run(
             "attempts": final.get("attempts", 0),
             "validation": final.get("validation_result"),
             "chunks_retrieved": len(final.get("final_context") or []),
+            "conflicts": final.get("conflicts") or [],
             "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={

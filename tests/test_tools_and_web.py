@@ -157,16 +157,33 @@ async def test_the_calculator_tool_evaluates_a_bare_expression():
     assert "22 - 8 = 14" in outcome["chunks"][0].content
 
 
-async def test_a_calculator_failure_comes_back_as_a_readable_chunk():
-    """Returned rather than raised, so one bad expression cannot sink a
-    question the documents could still answer."""
+async def test_a_sentence_is_deferred_to_the_post_retrieval_pass():
+    """The tool runs before retrieval, so it has no figures to work from.
 
+    It used to ask the model for an expression here, and the model filled
+    the empty sources from the worked examples in the prompt — answering
+    "22 - 8" because 22 is in an example, not because it had read the
+    policy.
+    """
+
+    outcome = await tool_registry.TOOLS["calculate"].ainvoke(
+        {
+            "query": "I have taken 8 days. How many are left?",
+            "top_k": 5,
+            "document_ids": None,
+        }
+    )
+
+    assert outcome["chunks"] == []
+    assert "deferred" in outcome["info"]
+
+
+async def test_an_unsafe_expression_is_never_evaluated():
     outcome = await tool_registry.TOOLS["calculate"].ainvoke(
         {"query": "__import__(\'os\')", "top_k": 5, "document_ids": None}
     )
 
-    assert outcome["chunks"]
-    assert "error" in outcome["info"]
+    assert outcome["chunks"] == []
 
 
 # --- when the web is reached -----------------------------------------

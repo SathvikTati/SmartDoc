@@ -208,56 +208,44 @@ async def calculate_tool(
     from port6.services.rag.calculator import (
         UnsafeExpression,
         calculate,
-        extract_expression,
+        calculation_chunk,
         format_result,
     )
 
-    expression = query
-
     try:
-        value = calculate(expression)
+        value = calculate(query)
 
     except UnsafeExpression:
-        # The agent hands every tool the raw question, so this is usually
-        # a sentence rather than an expression. Recover the arithmetic
-        # from it before giving up.
-        expression = await extract_expression(query) or query
-
-        try:
-            value = calculate(expression)
-
-        except UnsafeExpression as exc:
-            return {
-                "chunks": [
-                    RetrievedChunk(
-                        number=1,
-                        chunk_id=f"calc:{query}",
-                        document_id="calculation",
-                        filename="calculator",
-                        content=(
-                            f"No calculation could be made from {query!r}: "
-                            f"{exc}"
-                        ),
-                        sources=["calculation"],
-                    )
-                ],
-                "info": {"expression": expression, "error": str(exc)},
-            }
+        # A sentence, not an expression — which is the normal case, since
+        # the agent hands every tool the raw question.
+        #
+        # This used to ask the model to write the expression here. That
+        # was a mistake: the planner runs *before* retrieval, so there
+        # were no sources, and the model filled the gap from the worked
+        # examples in the prompt. It answered "22 - 8" for a leave
+        # question because 22 appears in an example, not because it had
+        # read the policy — and it would have said 22 on a corpus where
+        # the entitlement is 25.
+        #
+        # The sum is done after retrieval instead, in generation, where
+        # the figures are actually on the table. Selecting this tool is
+        # still meaningful: it is how the planner signals that the
+        # question needs arithmetic.
+        return {
+            "chunks": [],
+            "info": {
+                "deferred": (
+                    "the expression is written after retrieval, when the "
+                    "sources are available"
+                )
+            },
+        }
 
     result = format_result(value)
 
     return {
-        "chunks": [
-            RetrievedChunk(
-                number=1,
-                chunk_id=f"calc:{expression}",
-                document_id="calculation",
-                filename="calculator",
-                content=f"{expression} = {result}",
-                sources=["calculation"],
-            )
-        ],
-        "info": {"expression": expression, "result": result},
+        "chunks": [calculation_chunk(1, query.strip(), result)],
+        "info": {"expression": query.strip(), "result": result},
     }
 
 

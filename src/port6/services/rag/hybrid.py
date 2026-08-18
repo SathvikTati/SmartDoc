@@ -128,7 +128,7 @@ async def run(
         answer=result["answer"],
         answered=result["answered"],
         citations=result["citations"],
-        retrieved_chunks=chunks,
+        retrieved_chunks=result["chunks"],
         retrieval_method=RETRIEVAL_METHOD,
         latency_ms=round(
             (time.perf_counter() - started) * 1000,
@@ -140,6 +140,11 @@ async def run(
             "documents_considered": len(hierarchy["documents"]),
             "sections_considered": len(hierarchy["sections"]),
             "chunks_retrieved": len(chunks),
+            # Reported even when the answer reads cleanly, so a figure
+            # chosen over another is visible rather than implied.
+            "conflicts": [
+                conflict.describe() for conflict in result["conflicts"]
+            ],
             "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={
@@ -205,7 +210,7 @@ async def _run_aggregated(
         answer=result["answer"],
         answered=result["answered"],
         citations=result["citations"],
-        retrieved_chunks=chunks,
+        retrieved_chunks=result["chunks"],
         retrieval_method=(
             "cross-document aggregation: best chunks from each matching "
             "document, grouped by document"
@@ -216,6 +221,11 @@ async def _run_aggregated(
             "aggregated": True,
             "documents_covered": len(documents),
             "chunks_retrieved": len(chunks),
+            # Reported even when the answer reads cleanly, so a figure
+            # chosen over another is visible rather than implied.
+            "conflicts": [
+                conflict.describe() for conflict in result["conflicts"]
+            ],
             "scoped_to_documents": len(document_ids) if document_ids else 0,
         },
         debug={

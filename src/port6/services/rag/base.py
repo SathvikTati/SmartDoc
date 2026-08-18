@@ -6,6 +6,7 @@ compared side by side on the same input.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -37,6 +38,17 @@ class RetrievedChunk(BaseModel):
     page_number: int | None = None
 
     score: float | None = None
+
+    # When the document this chunk came from was uploaded. Used to settle
+    # disagreements between documents: nothing in a file says it
+    # supersedes another, so recency is the only signal available.
+    uploaded_at: datetime | None = None
+
+    # Set only on a calculation: the chunk_ids whose figures went into
+    # the expression. A worked sum is evidence about the documents it drew
+    # on, so citing the sum has to credit them too — otherwise the chunk
+    # holding "22 days" reads as unused in an answer that depends on it.
+    derived_from: list[str] = Field(default_factory=list)
 
     # Which retrievers found this chunk: "semantic", "keyword", or both.
     sources: list[str] = Field(default_factory=list)
