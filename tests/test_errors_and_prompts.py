@@ -94,7 +94,7 @@ def test_describe_buckets_non_provider_failures():
 
 def test_shipped_prompts_declare_the_variables_they_use():
     for name, spec in PROMPT_DEFAULTS.items():
-        _check_variables(name, spec["system"], spec["human"])
+        _check_variables(name, spec["template"])
 
 
 def test_an_edit_that_drops_the_sources_is_rejected():
@@ -103,8 +103,7 @@ def test_an_edit_that_drops_the_sources_is_rejected():
     with pytest.raises(InvalidPrompt) as caught:
         _check_variables(
             "answer_generation",
-            "Just answer the question.",
-            "{query}",
+            "Just answer the question.\n\n{query}",
         )
 
     assert "{context}" in str(caught.value)
@@ -114,8 +113,7 @@ def test_an_edit_that_drops_the_question_is_rejected():
     with pytest.raises(InvalidPrompt):
         _check_variables(
             "answer_generation",
-            "Answer from these sources: {context}",
-            "Go.",
+            "Answer from these sources: {context}\n\nGo.",
         )
 
 
@@ -123,14 +121,12 @@ def test_an_unbalanced_brace_is_rejected_before_it_reaches_a_request():
     with pytest.raises(InvalidPrompt):
         _check_variables(
             "answer_generation",
-            "{context} and a stray {",
-            "{query}",
+            "{context} and a stray {\n\n{query}",
         )
 
 
 def test_a_valid_rewording_is_accepted():
     _check_variables(
         "answer_generation",
-        "Use only these sources:\n\n{context}\n\nBe brief.",
-        "{query}",
+        "Use only these sources:\n\n{context}\n\nBe brief.\n\n{query}",
     )

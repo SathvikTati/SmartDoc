@@ -117,10 +117,8 @@ def seed(db: Session | None = None) -> None:
                 db.add(
                     Prompt(
                         name=name,
-                        system=spec["system"],
-                        human=spec["human"],
-                        default_system=spec["system"],
-                        default_human=spec["human"],
+                        template=spec["template"],
+                        default_template=spec["template"],
                         variables=spec["variables"],
                         description=spec.get("description"),
                         version=1,
@@ -132,26 +130,18 @@ def seed(db: Session | None = None) -> None:
             # seeding would never deliver it. So an *unedited* row follows
             # the new default, while an edited one is left alone — the
             # edit is the whole reason prompts are in the database.
-            unedited = (
-                row.system == row.default_system
-                and row.human == row.default_human
-            )
+            unedited = row.template == row.default_template
 
-            changed = (
-                row.default_system != spec["system"]
-                or row.default_human != spec["human"]
-            )
+            changed = row.default_template != spec["template"]
 
             # Keep the shipped text current either way, so "reset" always
             # means "back to this release".
-            row.default_system = spec["system"]
-            row.default_human = spec["human"]
+            row.default_template = spec["template"]
             row.variables = spec["variables"]
             row.description = spec.get("description")
 
             if changed and unedited:
-                row.system = spec["system"]
-                row.human = spec["human"]
+                row.template = spec["template"]
                 row.version = (row.version or 1) + 1
 
                 logger.info(
@@ -318,8 +308,7 @@ def _load_prompts() -> dict:
 
         prompts = {
             name: {
-                "system": spec["system"],
-                "human": spec["human"],
+                "template": spec["template"],
                 "version": 0,
                 "variables": spec["variables"],
             }
@@ -331,8 +320,7 @@ def _load_prompts() -> dict:
         try:
             for row in db.query(Prompt).all():
                 prompts[row.name] = {
-                    "system": row.system,
-                    "human": row.human,
+                    "template": row.template,
                     "version": row.version,
                     "variables": row.variables or [],
                 }
@@ -359,11 +347,11 @@ def get_prompt(name: str) -> ChatPromptTemplate:
 
     prompt = _load_prompts()[name]
 
+    # One template, rendered as a single user turn. A lone system message
+    # with no user turn behaves inconsistently across providers, so the
+    # whole prompt is sent as the message rather than split back apart.
     return ChatPromptTemplate.from_messages(
-        [
-            ("system", prompt["system"]),
-            ("human", prompt["human"]),
-        ]
+        [("human", prompt["template"])]
     )
 
 
@@ -383,17 +371,12 @@ def list_prompts() -> list[dict]:
     return [
         {
             "name": name,
-            "system": prompts[name]["system"],
-            "human": prompts[name]["human"],
+            "template": prompts[name]["template"],
             "version": prompts[name]["version"],
             "variables": spec["variables"],
             "description": spec.get("description"),
-            "default_system": spec["system"],
-            "default_human": spec["human"],
-            "is_default": (
-                prompts[name]["system"] == spec["system"]
-                and prompts[name]["human"] == spec["human"]
-            ),
+            "default_template": spec["template"],
+            "is_default": prompts[name]["template"] == spec["template"],
         }
         for name, spec in sorted(PROMPT_DEFAULTS.items())
     ]
@@ -401,8 +384,7 @@ def list_prompts() -> list[dict]:
 
 def _check_variables(
     name: str,
-    system: str,
-    human: str,
+    template: str,
 ) -> None:
     """Every placeholder the pipeline supplies must still be present.
 
@@ -412,12 +394,10 @@ def _check_variables(
     than an error, so it is rejected at write time.
     """
 
-    combined = f"{system}\n{human}"
-
     missing = [
         variable
         for variable in PROMPT_DEFAULTS[name]["variables"]
-        if "{" + variable + "}" not in combined
+        if "{" + variable + "}" not in template
     ]
 
     if missing:
@@ -428,9 +408,7 @@ def _check_variables(
 
     # Catch a stray brace before it reaches a live request.
     try:
-        ChatPromptTemplate.from_messages(
-            [("system", system), ("human", human)]
-        )
+        ChatPromptTemplate.from_messages([("human", template)])
 
     except Exception as exc:
         raise InvalidPrompt(f"Prompt {name!r} does not parse: {exc}") from exc
@@ -438,8 +416,7 @@ def _check_variables(
 
 def update_prompt(
     name: str,
-    system: str | None = None,
-    human: str | None = None,
+    template: str,
 ) -> dict:
 
     if name not in PROMPT_DEFAULTS:
@@ -454,25 +431,19 @@ def update_prompt(
             spec = PROMPT_DEFAULTS[name]
             row = Prompt(
                 name=name,
-                system=spec["system"],
-                human=spec["human"],
-                default_system=spec["system"],
-                default_human=spec["human"],
+                template=spec["template"],
+                default_template=spec["template"],
                 variables=spec["variables"],
                 description=spec.get("description"),
                 version=1,
             )
             db.add(row)
 
-        new_system = system if system is not None else row.system
-        new_human = human if human is not None else row.human
+        _check_variables(name, template)
 
-        _check_variables(name, new_system, new_human)
+        unchanged = template == row.template
 
-        unchanged = new_system == row.system and new_human == row.human
-
-        row.system = new_system
-        row.human = new_human
+        row.template = template
 
         if not unchanged:
             row.version = (row.version or 1) + 1
@@ -503,10 +474,4 @@ def reset_prompt(name: str) -> dict:
     if name not in PROMPT_DEFAULTS:
         raise UnknownPrompt(name)
 
-    spec = PROMPT_DEFAULTS[name]
-
-    return update_prompt(
-        name,
-        system=spec["system"],
-        human=spec["human"],
-    )
+    return update_prompt(name, PROMPT_DEFAULTS[name]["template"])

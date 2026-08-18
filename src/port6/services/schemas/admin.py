@@ -33,21 +33,18 @@ class SettingUpdate(BaseModel):
 
 class PromptResponse(BaseModel):
     name: str
-    system: str
-    human: str
+    template: str
     version: int
     variables: list[str] = []
     description: str | None = None
-    default_system: str
-    default_human: str
+    default_template: str
     is_default: bool
 
 
 class PromptUpdate(BaseModel):
-    """Either half can be omitted to leave it unchanged."""
+    """The whole prompt. There is no partial edit to make."""
 
-    system: str | None = Field(default=None, min_length=1)
-    human: str | None = Field(default=None, min_length=1)
+    template: str = Field(min_length=1)
 
 
 # -------------------------------------------------------------------

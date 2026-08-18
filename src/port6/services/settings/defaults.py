@@ -94,6 +94,23 @@ SETTING_DEFAULTS: dict[str, dict] = {
             "good retrievals, and each one costs a wasted retry."
         ),
     },
+    "conflicts.enabled": {
+        "value": True,
+        "description": (
+            "Notice when two documents give different figures for the "
+            "same thing, answer from the most recently uploaded, and say "
+            "what the older one said."
+        ),
+    },
+    "calculation.enabled": {
+        "value": True,
+        "description": (
+            "After retrieval, work out any arithmetic the answer depends "
+            "on and offer the result as a source. Runs in every mode, so "
+            "a question needing a sum is not left to the model's "
+            "arithmetic."
+        ),
+    },
     "aggregation.enabled": {
         "value": True,
         "description": (
@@ -114,6 +131,15 @@ SETTING_DEFAULTS: dict[str, dict] = {
         "description": (
             "Chunks taken from each document when aggregating, so one "
             "verbose document cannot crowd the others out."
+        ),
+    },
+    "aggregation.excerpt_characters": {
+        "value": 420,
+        "description": (
+            "How much of each chunk an aggregation answer sees per "
+            "document. Aggregation is about breadth, and handed the full "
+            "text of six documents the model transcribes instead of "
+            "summarising."
         ),
     },
     "aggregation.require_keyword_match": {
@@ -171,7 +197,7 @@ SETTING_DEFAULTS: dict[str, dict] = {
 # Prompts
 # -------------------------------------------------------------------
 
-ANSWER_SYSTEM = """
+ANSWER_TEMPLATE = """
 You are an enterprise document question-answering assistant.
 
 Answer the user's question using ONLY the numbered
@@ -192,6 +218,22 @@ Rules:
   statement comes from, and never merge a figure from a
   document with one from the web as though they were the
   same fact.
+- A source marked CALCULATION is arithmetic this system
+  evaluated from figures in the other sources. It is
+  correct. Use its result and cite it like any other
+  source, rather than doing the sum yourself.
+- A figure the sources do not state directly, but which a
+  CALCULATION source works out, counts as answered.
+- If a NOTE above the sources says the documents disagree,
+  answer with the figure from the most recently uploaded
+  document, then add one short sentence saying what the
+  older document said and that it appears to be superseded.
+  Never average the two, and never present both as equally
+  current.
+- The input may be a topic rather than a question —
+  "leave policy", "expense limits", "probation". Say what
+  the sources contain on that topic. Not being phrased as
+  a question is never a reason to reply NOT_FOUND.
 - If the sources do not contain the answer, reply
   with exactly NOT_FOUND and nothing else.
 - Give a clear and concise answer.
@@ -200,9 +242,13 @@ Rules:
 Sources:
 
 {context}
+
+Question: {query}
+
+Answer:
 """
 
-PLANNER_SYSTEM = """
+PLANNER_TEMPLATE = """
 You plan document retrieval. You do not answer questions.
 
 Available tools:
@@ -230,9 +276,12 @@ Guidance:
   suit hierarchical_search.
 - Otherwise hybrid_search is a good default.
 - Return the JSON object and nothing else.
+
+Question: {query}
+Previous attempt: {previous}
 """
 
-VALIDATION_SYSTEM = """
+VALIDATION_TEMPLATE = """
 You check whether retrieved sources contain enough
 information to answer a question.
 
@@ -246,9 +295,15 @@ Reply with exactly one word:
 
 Judge only what the sources say. Do not use outside
 knowledge. Reply with the single word and nothing else.
+
+Question: {query}
+
+Sources:
+
+{context}
 """
 
-SUMMARY_SYSTEM = """
+SUMMARY_TEMPLATE = """
 You are a document summarisation assistant.
 
 Summarise the document below in at most
@@ -263,9 +318,11 @@ Rules:
 Document: {filename}
 
 {content}
+
+Summarise this document.
 """
 
-FOLLOW_UP_SYSTEM = """
+FOLLOW_UP_TEMPLATE = """
 You decide how a new question relates to the conversation
 before it. You never answer the question itself.
 
@@ -322,39 +379,54 @@ Rules:
 Conversation:
 
 {history}
+
+New question: {question}
 """
 
-CALCULATION_SYSTEM = """
+CALCULATION_TEMPLATE = """
 You turn a question into a single arithmetic expression.
 You never answer the question.
 
-Use only numbers that appear in the text. Reply with the
-expression alone — no words, no equals sign, no units.
+Use only numbers and formulas that appear in the question
+or in the sources below. Reply with the expression alone —
+no words, no equals sign, no units.
 
-Examples.
+Reply with exactly NONE when the expression cannot be built
+from the question and the sources alone. That includes when
+the *operation* is missing, even though the numbers are
+present. A wrong number is worse than no number: it is
+handed to the answer as evidence.
 
-Text: Annual leave is 22 days. If I have taken 8, how many are left?
+Worked examples.
+
+Sources: Employees accrue 22 days of paid annual leave per calendar year.
+Question: I have taken 8 days of leave. How many do I have remaining?
 22 - 8
 
-Text: What is 15% of the 250 USD hotel cap?
+Sources: Hotel accommodation is capped at 250 USD per night in major cities.
+Question: What is 15% of the hotel cap?
 250 * 0.15
 
-Text: Three employees each get 26 weeks of maternity leave. Total?
-3 * 26
+Sources: Overtime pay = Hourly pay rate x 1.5 x overtime hours worked.
+Question: My hourly rate is 20 and I worked 6 overtime hours. What is my overtime pay?
+20 * 1.5 * 6
 
-Reply with exactly NONE when you cannot build the whole
-expression from the text alone. That includes when the
-*operation* is missing, even if the numbers are present.
-
-Text: My hourly rate is 20 and I worked 6 overtime hours. What is my overtime pay?
+Sources: Employees must give 60 days written notice of resignation.
+Question: What is the maternity leave entitlement?
 NONE
 
-(The overtime multiplier is not stated in the text, so any
-expression would be a guess. A wrong number is worse than
-no number: it is handed to the answer as evidence.)
+Sources: Control SEC-4412 blocks the reuse of the previous 12 passwords.
+Question: What is control SEC-4412?
+NONE
+
+Sources:
+
+{context}
+
+Question: {question}
 """
 
-AGGREGATE_SYSTEM = """
+AGGREGATE_TEMPLATE = """
 You are an enterprise document question-answering assistant.
 
 The question asks about the document library as a whole, so
@@ -364,7 +436,13 @@ Answer using ONLY those sources.
 
 Rules:
 - Go through the documents one by one. Name each document
-  and say what it contributes.
+  and say what it contributes, in one or two sentences.
+- Summarise in your own words. Never copy a source's
+  header line, and never reproduce "| section: ..." or
+  "| page N" — those label the sources for you, they are
+  not part of the answer.
+- Do not quote a source at length. The reader can open it;
+  what they need here is what each document adds.
 - Cite the source number in square brackets after every
   statement, for example: [1].
 - Only cite source numbers that appear below.
@@ -378,9 +456,13 @@ Rules:
 Sources, grouped by document:
 
 {context}
+
+Question: {query}
+
+Answer:
 """
 
-SUMMARY_COMBINE_SYSTEM = """
+SUMMARY_COMBINE_TEMPLATE = """
 You are a document summarisation assistant.
 
 Below are summaries of consecutive parts of one document,
@@ -397,13 +479,18 @@ Rules:
 Document: {filename}
 
 {content}
+
+Combine these into one summary.
 """
 
 
+# Each prompt is a single template rather than a system/human pair. The
+# split bought nothing — every prompt put its instructions, its sources
+# and its question in a fixed order anyway — and cost a reader two fields
+# to hold in their head, and an editor two boxes to keep consistent.
 PROMPT_DEFAULTS: dict[str, dict] = {
     "answer_generation": {
-        "system": ANSWER_SYSTEM,
-        "human": "{query}",
+        "template": ANSWER_TEMPLATE,
         "variables": ["context", "query"],
         "description": (
             "Generates the cited answer. Shared by all three retrieval "
@@ -411,55 +498,48 @@ PROMPT_DEFAULTS: dict[str, dict] = {
         ),
     },
     "retrieval_planner": {
-        "system": PLANNER_SYSTEM,
-        "human": "Question: {query}\nPrevious attempt: {previous}",
+        "template": PLANNER_TEMPLATE,
         "variables": ["catalogue", "query", "previous"],
         "description": (
-            "Agentic mode only. Picks which retrieval tools to run for a "
-            "question, on the first attempt."
+            "Chooses which retrieval tools the agent runs, from the "
+            "catalogue of those currently available."
         ),
     },
     "evidence_validation": {
-        "system": VALIDATION_SYSTEM,
-        "human": "Question: {query}\n\nSources:\n\n{context}",
+        "template": VALIDATION_TEMPLATE,
         "variables": ["query", "context"],
         "description": (
-            "Agentic mode only. Judges whether the retrieved sources "
-            "support an answer before one is generated."
+            "Judges whether the retrieved sources can answer the "
+            "question, which is what decides a retry."
         ),
     },
     "aggregate_answer": {
-        "system": AGGREGATE_SYSTEM,
-        "human": "{query}",
+        "template": AGGREGATE_TEMPLATE,
         "variables": ["context", "query"],
         "description": (
-            "Used instead of answer_generation when a question needs "
-            "breadth across documents rather than the best few chunks."
+            "Answers a question about the library as a whole, walking "
+            "the documents one by one instead of writing one paragraph."
         ),
     },
     "follow_up_resolution": {
-        "system": FOLLOW_UP_SYSTEM,
-        "human": "New question: {question}",
+        "template": FOLLOW_UP_TEMPLATE,
         "variables": ["history", "question"],
         "description": (
             "Decides whether a question continues the conversation or "
-            "starts a new topic, and rewrites a follow-up so it can be "
-            "searched on its own. Runs only when there is history."
+            "starts a new topic, and rewrites a follow-up to stand alone."
         ),
     },
     "calculation_expression": {
-        "system": CALCULATION_SYSTEM,
-        "human": "Text: {question}",
-        "variables": ["question"],
+        "template": CALCULATION_TEMPLATE,
+        "variables": ["question", "context"],
         "description": (
-            "Extracts the arithmetic expression from a question, for the "
-            "calculate tool. Only runs when the tool is handed a sentence "
-            "rather than an expression."
+            "Turns a question into an arithmetic expression for the "
+            "calculator, using formulas and figures from the retrieved "
+            "sources as well as from the question itself."
         ),
     },
     "document_summary": {
-        "system": SUMMARY_SYSTEM,
-        "human": "Summarise this document.",
+        "template": SUMMARY_TEMPLATE,
         "variables": ["filename", "content", "max_words"],
         "description": (
             "Runs once per document at ingestion. The summary is what "
@@ -467,8 +547,7 @@ PROMPT_DEFAULTS: dict[str, dict] = {
         ),
     },
     "document_summary_combine": {
-        "system": SUMMARY_COMBINE_SYSTEM,
-        "human": "Combine these into one summary.",
+        "template": SUMMARY_COMBINE_TEMPLATE,
         "variables": ["filename", "content", "max_words"],
         "description": (
             "Used when a document is too long for one call: its section "

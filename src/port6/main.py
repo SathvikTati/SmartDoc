@@ -32,6 +32,7 @@ from port6.services.schemas.admin import (
     SettingUpdate,
 )
 from port6.services.settings import service as settings_service
+from port6.services.tracing import service as tracing_service
 from port6.services.files.filevalidator import (
     FileSave,
     validate_files,
@@ -67,12 +68,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Seed settings and prompts before the first request.
+    """Seed settings and prompts, and start tracing, before serving.
 
     Only inserts rows that are missing, so an edited prompt survives a
     restart. A failure here is logged rather than fatal — the services fall
     back to the code defaults, which are the same values being seeded.
     """
+
+    # Before anything else: the instrumentor patches LangChain, so it has
+    # to be in place before the first chain is built.
+    tracing_service.setup()
 
     try:
         settings_service.seed()
@@ -540,11 +545,7 @@ async def update_prompt(
     request: PromptUpdate,
 ):
     try:
-        return settings_service.update_prompt(
-            name,
-            system=request.system,
-            human=request.human,
-        )
+        return settings_service.update_prompt(name, request.template)
 
     except settings_service.UnknownPrompt:
         raise HTTPException(

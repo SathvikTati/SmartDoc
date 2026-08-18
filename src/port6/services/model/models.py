@@ -161,10 +161,15 @@ class Setting(Base):
 class Prompt(Base):
     """An LLM prompt, stored so it can be changed without a redeploy.
 
-    `system` and `human` mirror the two turns every prompt in this system
-    uses. `variables` records the placeholders the template must contain,
-    which is what stops a malformed edit from breaking a pipeline at the
-    worst possible moment.
+    One `template` rather than a system/human pair. The split mirrored the
+    two chat turns, but every prompt here ordered itself the same way
+    anyway — instructions, then sources, then the question — so the second
+    field only ever held the last line or two, and editing a prompt meant
+    keeping two fields consistent by hand.
+
+    `variables` records the placeholders the template must contain, which
+    is what stops a malformed edit from breaking a pipeline at the worst
+    possible moment.
     """
 
     __tablename__ = "prompts"
@@ -174,12 +179,7 @@ class Prompt(Base):
         primary_key=True,
     )
 
-    system = Column(
-        Text,
-        nullable=False,
-    )
-
-    human = Column(
+    template = Column(
         Text,
         nullable=False,
     )
@@ -205,12 +205,7 @@ class Prompt(Base):
     )
 
     # The shipped text, so an edit can always be reverted.
-    default_system = Column(
-        Text,
-        nullable=False,
-    )
-
-    default_human = Column(
+    default_template = Column(
         Text,
         nullable=False,
     )
