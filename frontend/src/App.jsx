@@ -4,6 +4,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { AskPage } from '@/pages/AskPage'
 import { ComparePage } from '@/pages/ComparePage'
+import { PipelinesPage } from '@/pages/PipelinesPage'
 import { DocumentDetailPage } from '@/pages/DocumentDetailPage'
 import { FilesPage } from '@/pages/FilesPage'
 import { HistoryPage } from '@/pages/HistoryPage'
@@ -11,6 +12,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { SearchPage } from '@/pages/SearchPage'
 import { DocumentsProvider } from '@/state/DocumentsContext'
 import { InvestigationsProvider } from '@/state/InvestigationsContext'
+import { SettingsProvider } from '@/state/SettingsContext'
 
 export default function App() {
   return (
@@ -18,8 +20,9 @@ export default function App() {
     // only one inside a route.
     <ErrorBoundary>
       <BrowserRouter>
-        <DocumentsProvider>
-          <InvestigationsProvider>
+        <SettingsProvider>
+          <DocumentsProvider>
+            <InvestigationsProvider>
             <Routes>
               {/* Ask is the home page: asking questions is what the
                   product is for, and the library is one click away. */}
@@ -35,13 +38,15 @@ export default function App() {
                 />
                 <Route path="/search" element={<SearchPage />} />
                 <Route path="/compare" element={<ComparePage />} />
+                <Route path="/pipelines" element={<PipelinesPage />} />
               </Route>
 
               {/* Outside the shell: a 404 has no breadcrumb trail. */}
               <Route path="*" element={<NotFoundPage />} />
             </Routes>
-          </InvestigationsProvider>
-        </DocumentsProvider>
+            </InvestigationsProvider>
+          </DocumentsProvider>
+        </SettingsProvider>
       </BrowserRouter>
     </ErrorBoundary>
   )

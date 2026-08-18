@@ -1,5 +1,15 @@
 import { Label, SegmentedControl, Select } from '@/components/ui/Field'
 
+/**
+ * A chat picks between the three families, not between the seven
+ * strategies inside them.
+ *
+ * That is deliberate. Choosing "hierarchical + keyword" over "semantic +
+ * keyword" is a question about retrieval, and the place to answer it is
+ * the Pipelines page, where you can run both on the same question and
+ * read the difference. Surfacing all seven here would make the common
+ * case worse in order to serve the rare one.
+ */
 export const MODE_OPTIONS = [
   {
     value: 'naive',

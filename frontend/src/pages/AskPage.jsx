@@ -25,6 +25,7 @@ import * as api from '@/lib/api'
 import { FileIcon } from '@/components/FileIcon'
 import { cn, formatCount, truncate } from '@/lib/format'
 import { useDocuments } from '@/state/DocumentsContext'
+import { useSettings } from '@/state/SettingsContext'
 import { useInvestigations } from '@/state/InvestigationsContext'
 
 /** "Monday afternoon" — a small orientation, not a fake personalisation. */
@@ -121,6 +122,7 @@ function RelationBadge({ turn }) {
 export function AskPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { documents, loading: documentsLoading } = useDocuments()
+  const { defaults } = useSettings()
   const {
     chats,
     loading: historyLoading,
@@ -132,8 +134,11 @@ export function AskPage() {
   } = useInvestigations()
 
   const [question, setQuestion] = useState('')
-  const [mode, setMode] = useState('hybrid')
-  const [topK, setTopK] = useState(5)
+  // null means "whatever the defaults say", resolved server-side so an
+  // API caller and the UI get the same treatment. Choosing one here
+  // overrides it for this conversation only.
+  const [mode, setMode] = useState(null)
+  const [topK, setTopK] = useState(null)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState(null)
   const [focused, setFocused] = useState(false)
@@ -217,22 +222,22 @@ export function AskPage() {
     setError(null)
 
     try {
-      const result = await api.ask(
-        trimmed,
-        mode,
-        topK,
-        scopeIds,
+      const result = await api.ask(trimmed, {
+        mode: mode ?? defaults.mode,
+        topK: topK ?? defaults.topK,
+        documentIds: scopeIds,
         // Continuing the open conversation is what makes a follow-up
         // resolvable; without it every question starts from nothing.
-        current?.id ?? null,
-        controller.signal,
-      )
+        chatId: current?.id ?? null,
+        signal: controller.signal,
+      })
 
       appendTurn({
         id: result.metadata?.run_id ?? `local-${Date.now()}`,
         question: trimmed,
-        mode,
-        topK,
+        mode: result.metadata?.mode,
+        pipeline: result.metadata?.pipeline,
+        topK: result.metadata?.top_k,
         result,
         askedAt: new Date().toISOString(),
       })
@@ -326,13 +331,15 @@ export function AskPage() {
       </Pill>
 
       <Pill
-        active={mode !== 'hybrid'}
+        active={mode !== null || topK !== null}
         onClick={() => setControlsOpen((value) => !value)}
         title="Retrieval mode and how many chunks to retrieve"
       >
         <SlidersHorizontal className="h-3.5 w-3.5" />
-        <span className="capitalize">{mode}</span>
-        <span className="text-ink-subtle">&middot; top {topK}</span>
+        <span className="capitalize">{mode ?? defaults.mode}</span>
+        <span className="text-ink-subtle">
+          &middot; top {topK ?? defaults.topK}
+        </span>
       </Pill>
 
       <PillButton
@@ -361,8 +368,8 @@ export function AskPage() {
   const modeControls = controlsOpen && (
     <div className="mt-3 border-t border-line pt-3 animate-fade-in">
       <QueryControls
-        mode={mode}
-        topK={topK}
+        mode={mode ?? defaults.mode}
+        topK={topK ?? defaults.topK}
         onModeChange={setMode}
         onTopKChange={setTopK}
         disabled={running}

@@ -9,7 +9,6 @@ import { Disclosure } from '@/components/ui/Disclosure'
 import { Label, Select, Textarea } from '@/components/ui/Field'
 import { Panel, SectionHeading } from '@/components/ui/Panel'
 import { EmptyState, ErrorState, SkeletonBlock } from '@/components/ui/States'
-import { MODE_OPTIONS } from '@/components/rag/QueryControls'
 import { RetrievalTrace } from '@/components/rag/RetrievalTrace'
 import { ChunkCard } from '@/components/rag/ChunkCard'
 import * as api from '@/lib/api'
@@ -18,6 +17,14 @@ import { cn, formatLatency } from '@/lib/format'
 import { useDocuments } from '@/state/DocumentsContext'
 
 /** One metric row of the comparison table. */
+// This page compares the three families. Picking specific pipelines
+// within a family is what /pipelines is for.
+const MODE_LABELS = {
+  naive: 'Naive',
+  hybrid: 'Hybrid',
+  agentic: 'Agentic',
+}
+
 const METRICS = [
   {
     label: 'Answered',
@@ -129,7 +136,13 @@ export function ComparePage() {
     setError(null)
 
     try {
-      setResponse(await api.compare(trimmed, RAG_MODES, topK, controller.signal))
+      setResponse(
+        await api.compare(trimmed, {
+          modes: RAG_MODES,
+          topK,
+          signal: controller.signal,
+        }),
+      )
     } catch (caught) {
       if (controller.signal.aborted) return
       setError(caught?.message ?? 'Comparison failed')
@@ -274,8 +287,7 @@ export function ComparePage() {
                             scope="col"
                             className="px-3 py-2 text-center text-2xs font-medium uppercase tracking-wide text-ink"
                           >
-                            {MODE_OPTIONS.find((option) => option.value === mode)
-                              ?.label ?? mode}
+                            {MODE_LABELS[mode] ?? mode}
                           </th>
                         ))}
                       </tr>

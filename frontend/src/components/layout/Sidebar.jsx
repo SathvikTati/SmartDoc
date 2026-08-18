@@ -1,5 +1,11 @@
 import { Link, NavLink } from 'react-router-dom'
-import { Columns3, FolderOpen, MessageSquareText, Search } from 'lucide-react'
+import {
+  Columns3,
+  FlaskConical,
+  FolderOpen,
+  MessageSquareText,
+  Search,
+} from 'lucide-react'
 
 import { cn, truncate } from '@/lib/format'
 import { useInvestigations } from '@/state/InvestigationsContext'
@@ -14,6 +20,12 @@ const NAV = [
   { to: '/files', label: 'Files', icon: FolderOpen, hint: 'Document library' },
   { to: '/search', label: 'Search', icon: Search, hint: 'Raw chunk retrieval' },
   { to: '/compare', label: 'Compare', icon: Columns3, hint: 'Modes side by side' },
+  {
+    to: '/pipelines',
+    label: 'Pipelines',
+    icon: FlaskConical,
+    hint: 'Test retrieval strategies',
+  },
 ]
 
 const RECENT_SHOWN = 8

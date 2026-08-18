@@ -157,14 +157,31 @@ export function listModes() {
  * leave?" is resolved against the turns before it. Omit it to start a new
  * one — the id comes back in `metadata.chat_id` either way.
  */
-export function ask(question, mode, topK, documentIds, chatId, signal) {
+/** What a pipeline can be built from: retrievers, tools, presets. */
+export function listRetrievalOptions() {
+  return call(() => client.get('/pipelines'))
+}
+
+/**
+ * `pipeline` names the exact strategy. Passing null for both it and
+ * `topK` lets the server apply the configured defaults, which is what a
+ * new chat should do — the settings are stored server-side so they hold
+ * across browsers.
+ */
+export function ask(
+  question,
+  { mode, retrievers, agent, tools, topK, documentIds, chatId, signal } = {},
+) {
   return call(() =>
     client.post(
       '/ask',
       {
         question,
-        mode,
-        top_k: topK,
+        mode: mode ?? null,
+        retrievers: retrievers?.length ? retrievers : null,
+        agent: agent ?? false,
+        tools: tools?.length ? tools : null,
+        top_k: topK ?? null,
         document_ids: documentIds?.length ? documentIds : null,
         chat_id: chatId ?? null,
       },
@@ -173,18 +190,27 @@ export function ask(question, mode, topK, documentIds, chatId, signal) {
   )
 }
 
-export function compare(question, modes, topK, documentIds, signal) {
+/**
+ * Runs sequentially on the server, so the timeout scales with how many
+ * were asked for rather than assuming three.
+ */
+export function compare(
+  question,
+  { modes, configurations, topK, documentIds, signal } = {},
+) {
+  const count = configurations?.length || modes?.length || 3
+
   return call(() =>
     client.post(
       '/ask/compare',
       {
         question,
-        modes,
+        modes: modes ?? undefined,
+        configurations: configurations?.length ? configurations : null,
         top_k: topK,
         document_ids: documentIds?.length ? documentIds : null,
       },
-      // Three pipelines run back to back against the same local model.
-      { timeout: ASK_TIMEOUT * 3, signal },
+      { timeout: ASK_TIMEOUT * count, signal },
     ),
   )
 }
