@@ -183,9 +183,23 @@ the `agent.max_attempts` setting).
 Only the tools chosen and the plan's one-line reason are exposed, never the
 model's private reasoning.
 
-**`calculate`** exists because models are unreliable at arithmetic and
-confidently wrong when they slip. It evaluates through an AST walker rather
-than `eval` — the expression comes from a model, so it is untrusted input.
+**Arithmetic** is not left to the model, which is unreliable at it and
+confidently wrong when it slips. Expressions are evaluated through an AST
+walker rather than `eval` — the expression is written by a model, so it is
+untrusted input.
+
+The sum runs *after* retrieval, in every mode, so naive and hybrid handle
+"I have taken 8 days, how many are left?" without an agent in front of
+them, and a formula that lives in the document (`overtime pay = rate ×
+1.5 × hours`) is applied rather than guessed at. Selecting the
+`calculate` tool is how the agent signals a question needs arithmetic;
+the tool itself only evaluates a query that is already an expression,
+because before retrieval there are no figures to work from.
+
+The result is offered as a numbered source labelled `CALCULATION`, and it
+records which chunks its figures came from — so citing the sum also
+credits the policy that supplied the entitlement, rather than leaving it
+marked retrieved-but-unused.
 
 **`web_search`** is keyless (DuckDuckGo; Google has no keyless API) and
 **off by default**, because an answer citing the internet is a different
@@ -193,6 +207,30 @@ promise from one citing only your documents. Turn it on with
 `PUT /settings/web.enabled`. Web sources are labelled in the context, in
 the citations and in the UI, and a question scoped to specific documents
 never reaches the web at all.
+
+## Tracing
+
+An answer is several model calls behind one response — resolve the
+follow-up, plan the tools, validate the evidence, write the expression,
+generate the answer. Logs show the outcome, not the prompt that caused
+it, so "why did it pick that tool?" has no answer in them.
+
+[Phoenix](https://github.com/Arize-ai/phoenix) records each call as a
+span with its prompt, completion, latency and token counts, and the
+LangGraph run as the trace around them.
+
+```bash
+# the UI, in its own process — Python 3.12, the server does not import on 3.11
+uvx --python 3.12 --from arize-phoenix phoenix serve
+
+PHOENIX_ENABLED=true uv run uvicorn port6.main:app --reload
+```
+
+Then open <http://localhost:6006>. This process only emits spans; it does
+not host the UI, which is why the dependency is `arize-phoenix-otel` and
+not the server package. Off by default, and every failure inside it is
+swallowed — observability that can take the service down is worse than
+none.
 
 ---
 
