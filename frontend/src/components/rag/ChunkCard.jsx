@@ -1,9 +1,20 @@
 import { Link } from 'react-router-dom'
-import { ChevronDown, ChevronRight, ExternalLink, Globe } from 'lucide-react'
+import {
+  Calculator,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Globe,
+} from 'lucide-react'
 
 import { Badge } from '@/components/ui/Badge'
 import { FileIcon } from '@/components/FileIcon'
 import { cn, scoreLabel } from '@/lib/format'
+
+/* Neither of these is a row in the documents table, so neither can be
+   opened at /files/…. The backend uses these exact ids for the same
+   reason: they cannot collide with a real document. */
+const CALCULATION_ID = 'calculation'
 
 /** "hr_policy.md · Section 1.1 Annual Leave · Page 4" */
 export function citationLabel(chunk) {
@@ -60,6 +71,9 @@ export function ChunkCard({
   highlighted,
   onToggle,
   anchorId,
+  // Only ever set on a calculation: the [n] markers of the chunks its
+  // figures came from. Resolved by the parent, which holds the full list.
+  derivedNumbers = [],
 }) {
   return (
     <div
@@ -100,6 +114,8 @@ export function ChunkCard({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {chunk.url ? (
               <Globe className="h-3.5 w-3.5 shrink-0 text-warn" />
+            ) : chunk.document_id === CALCULATION_ID ? (
+              <Calculator className="h-3.5 w-3.5 shrink-0 text-accent" />
             ) : (
               <FileIcon filename={chunk.filename} className="h-3.5 w-3.5" />
             )}
@@ -115,6 +131,11 @@ export function ChunkCard({
             {/* A web result is not one of your documents, and an answer
                 built on it means something different. Say so plainly. */}
             {chunk.url && <Badge tone="warn">Web</Badge>}
+            {/* Worked out here, not read out of a document. Saying so is
+                what makes the figure auditable rather than asserted. */}
+            {chunk.document_id === CALCULATION_ID && (
+              <Badge tone="ok">Calculated</Badge>
+            )}
             {!cited && <Badge tone="neutral">Retrieved, unused</Badge>}
             <SourceTags chunk={chunk} />
           </div>
@@ -145,6 +166,14 @@ export function ChunkCard({
                   <span className="truncate">{chunk.url}</span>
                   <ExternalLink className="h-2.5 w-2.5 shrink-0" />
                 </a>
+              ) : chunk.document_id === CALCULATION_ID ? (
+                <p className="mt-1.5 text-2xs text-ink-subtle">
+                  {derivedNumbers.length > 0
+                    ? `Evaluated from the figures in ${derivedNumbers
+                        .map((number) => `[${number}]`)
+                        .join(' and ')}.`
+                    : 'Evaluated from the figures in the question.'}
+                </p>
               ) : (
                 <Link
                   to={`/files/${chunk.document_id}`}
