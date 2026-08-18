@@ -380,18 +380,29 @@ def _is_offered(name: str) -> bool:
     return web.is_available() and bool(get_setting("web.enabled"))
 
 
-def available_tools() -> dict:
+def available_tools(allowed: tuple[str, ...] | None = None) -> dict:
+    """The tools the planner may choose from right now.
+
+    Two gates, and both have to pass. `_is_offered` is the server's
+    say — web search stays off unless it is switched on, whatever a
+    request asks for. `allowed` is the composition's say: the retrieval
+    tools it was built from, plus whatever extras were selected.
+
+    None means no composition-level restriction, which is what a direct
+    call to the agent gets.
+    """
+
     return {
         name: tool_fn
         for name, tool_fn in TOOLS.items()
-        if _is_offered(name)
+        if _is_offered(name) and (allowed is None or name in allowed)
     }
 
 
-def tool_catalogue() -> str:
+def tool_catalogue(allowed: tuple[str, ...] | None = None) -> str:
     """Tool names and descriptions, for the planner prompt."""
 
     return "\n".join(
         f"- {name}: {' '.join(tool_fn.description.split())}"
-        for name, tool_fn in available_tools().items()
+        for name, tool_fn in available_tools(allowed).items()
     )

@@ -33,6 +33,24 @@ SETTING_DEFAULTS: dict[str, dict] = {
             "sentence split across the boundary is still retrievable."
         ),
     },
+    "defaults.mode": {
+        "value": "hybrid",
+        "description": (
+            "The retrieval mode a new chat starts with: naive, hybrid or "
+            "agentic. Chats stay on the three families deliberately — "
+            "choosing between the strategies inside one is what the "
+            "Pipelines page is for. A request naming its own mode or "
+            "pipeline overrides this."
+        ),
+    },
+    "defaults.top_k": {
+        "value": 5,
+        "description": (
+            "How many chunks a new chat retrieves. More is not always "
+            "better: past a point the extra chunks are near-misses that "
+            "dilute the context the answer is written from."
+        ),
+    },
     "retrieval.max_distance": {
         "value": None,
         "description": (

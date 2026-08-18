@@ -55,6 +55,7 @@ def record_run(
     chat_id: str | None = None,
     turn_index: int = 0,
     resolution: dict | None = None,
+    pipeline: str | None = None,
 ) -> str | None:
     """Store one answered question. Returns the run id, or None on failure."""
 
@@ -69,6 +70,7 @@ def record_run(
             relation=resolution.get("relation"),
             standalone_question=resolution.get("standalone_question"),
             context_strategy=resolution.get("strategy"),
+            pipeline=pipeline,
             question=question,
             mode=mode,
             top_k=top_k,

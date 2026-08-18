@@ -313,6 +313,15 @@ class QueryRun(Base):
         nullable=True,
     )
 
+    # Which named strategy answered. `mode` is still recorded alongside
+    # it: it is the family, and every run before pipelines existed has
+    # one of those and no pipeline.
+    pipeline = Column(
+        String(60),
+        nullable=True,
+        index=True,
+    )
+
     mode = Column(
         String(20),
         nullable=False,

@@ -94,6 +94,17 @@ class AgentState(TypedDict, total=False):
     # resolved by upload recency. Surfaced so the answer is not the only
     # place the disagreement is visible.
     conflicts: Annotated[list[str], _keep_last]
+
+    # Set from the pipeline. `use_planner` false chooses tools by rule
+    # instead of spending a model call on it; `max_attempts` bounds the
+    # retry loop, so a variant can be a deliberate single pass.
+    use_planner: bool
+    max_attempts: int
+
+    # The composition's tool allow-list. Turning the agent on must not
+    # quietly widen what is searched, or a with-agent against
+    # without-agent comparison would be varying two things.
+    allowed_tools: tuple
     answer: Annotated[str, _keep_last]
     answered: Annotated[bool, _keep_last]
     citations: Annotated[list[RetrievedChunk], _keep_last]
@@ -105,13 +116,31 @@ def rule_based_plan(
     attempt: int,
     query: str = "",
     web_pending: bool = False,
+    allowed: tuple[str, ...] | None = None,
 ) -> tuple[list[str], str]:
     """Deterministic fallback, and the retry strategy.
 
     Used when the planner model is unavailable or returns unusable output,
     and always for the second attempt, where the goal is deliberately to
     widen rather than to re-plan.
+
+    Every choice below is filtered through the composition's allow-list:
+    the rules name the tools they would *like*, and `_permitted` keeps
+    only the ones this composition actually has. A keyword-only
+    composition cannot be handed `hybrid_search` by a rule any more than
+    by the planner.
     """
+
+    offered = list(available_tools(allowed))
+
+    def _permitted(preferred: list[str]) -> list[str]:
+        kept = [name for name in preferred if name in offered]
+
+        # Nothing preferred survived — fall back to whatever retrieval
+        # this composition does have, rather than planning nothing.
+        return kept or [
+            name for name in offered if name.endswith("_search")
+        ][:2] or offered[:1]
 
     # A library-wide question needs breadth on every attempt. Widening to
     # a depth-ranked hybrid sweep would replace the per-document coverage
@@ -119,7 +148,7 @@ def rule_based_plan(
     # to prevent.
     if is_aggregation_question(query):
         return (
-            ["aggregate_search"],
+            _permitted(["aggregate_search"]),
             "Question is about the library as a whole; covering each "
             "matching document.",
         )
@@ -135,23 +164,23 @@ def rule_based_plan(
         # short rather than a guess made up front.
         widened = ["hybrid_search", "keyword_search"]
 
-        if "web_search" in available_tools() and web_pending:
+        if "web_search" in available_tools(allowed) and web_pending:
             widened = ["web_search", "hybrid_search"]
 
             return (
-                widened,
+                _permitted(widened),
                 "The documents did not answer this; widening the search "
                 "and checking the web.",
             )
 
         return (
-            widened,
+            _permitted(widened),
             "First attempt found thin evidence; widening to a "
             "full hybrid sweep.",
         )
 
     return (
-        ["hybrid_search", "hierarchical_search"],
+        _permitted(["hybrid_search", "hierarchical_search"]),
         "General question: hybrid retrieval with hierarchical narrowing.",
     )
 
@@ -159,6 +188,7 @@ def rule_based_plan(
 async def plan_with_model(
     query: str,
     previous: str,
+    allowed: tuple[str, ...] | None = None,
 ) -> tuple[list[str], str] | None:
 
     try:
@@ -166,7 +196,7 @@ async def plan_with_model(
 
         response = await chain.ainvoke(
             {
-                "catalogue": tool_catalogue(),
+                "catalogue": tool_catalogue(allowed),
                 "query": query,
                 "previous": previous or "none",
             }
@@ -191,10 +221,12 @@ async def plan_with_model(
 
         parsed = json.loads(content[start : end + 1])
 
+        offered = available_tools(allowed)
+
         tools = [
             name
             for name in parsed.get("tools", [])
-            if name in TOOLS
+            if name in offered
         ]
 
         if not tools:
@@ -233,10 +265,11 @@ async def node_retrieval_planner(state: AgentState) -> dict:
     # a non-zero value. Testing `answered` here instead was a bug:
     # LangGraph initialises the bool channel to False, so the check never
     # passed and every question silently used the rule-based plan.
-    if attempt == 0:
+    if attempt == 0 and state.get("use_planner", True):
         plan = await plan_with_model(
             state["query"],
             previous,
+            allowed=state.get("allowed_tools"),
         )
 
     if plan is None:
@@ -252,6 +285,7 @@ async def node_retrieval_planner(state: AgentState) -> dict:
                 and state.get("answered") is False
                 and not state.get("web_attempted")
             ),
+            allowed=state.get("allowed_tools"),
         )
         source = "rules"
 
@@ -447,7 +481,9 @@ def route_after_validation(state: AgentState) -> str:
     if validation.get("sufficient"):
         return "context_builder"
 
-    if state.get("attempts", 0) >= get_int("agent.max_attempts"):
+    limit = state.get("max_attempts") or get_int("agent.max_attempts")
+
+    if state.get("attempts", 0) >= limit:
         # Out of retries: go on to answer, where insufficient evidence
         # becomes an honest "not found" rather than a guess.
         return "context_builder"
@@ -470,7 +506,10 @@ async def node_context_builder(state: AgentState) -> dict:
             chunks,
             chunks_per_document=get_int("aggregation.chunks_per_document"),
             max_documents=get_int("aggregation.max_documents"),
-        )
+            # Spread the requested budget across documents rather than
+            # ignoring it: coverage decides the shape, top_k the size.
+            budget=top_k,
+        )["chunks"]
 
         for position, chunk in enumerate(ordered, start=1):
             chunk.number = position
@@ -605,7 +644,7 @@ def route_after_answer(state: AgentState) -> str:
     if state.get("web_attempted"):
         return END
 
-    if "web_search" not in available_tools():
+    if "web_search" not in available_tools(state.get("allowed_tools")):
         return END
 
     logger.info("Documents did not answer; falling back to the web")
@@ -666,15 +705,29 @@ async def run(
     question: str,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    composition=None,
 ) -> RagResult:
 
     started = time.perf_counter()
+
+    # Called directly — and by every existing test — without one, which
+    # means the full agent over every retriever: the behaviour this graph
+    # had before compositions existed.
+    if composition is None:
+        from port6.services.rag.pipelines import PRESETS
+
+        composition = PRESETS["agentic"]
 
     final = await get_graph().ainvoke(
         {
             "query": question,
             "top_k": top_k,
             "document_ids": document_ids or [],
+            "use_planner": composition.planner,
+            "max_attempts": get_int("agent.max_attempts")
+            if composition.planner
+            else 1,
+            "allowed_tools": composition.allowed_tools,
         }
     )
 
@@ -689,13 +742,18 @@ async def run(
         answered=final.get("answered", False),
         citations=final.get("citations") or [],
         retrieved_chunks=final.get("final_context") or [],
-        retrieval_method=RETRIEVAL_METHOD,
+        retrieval_method=composition.method or RETRIEVAL_METHOD,
         latency_ms=round(
             (time.perf_counter() - started) * 1000,
             2,
         ),
         metadata={
             "mode": "agentic",
+            "pipeline": composition.id,
+            "pipeline_label": composition.label,
+            "retrievers": list(composition.ordered),
+            "agent": True,
+            "allowed_tools": list(composition.allowed_tools),
             "top_k": top_k,
             "tools_used": tools_used,
             "attempts": final.get("attempts", 0),

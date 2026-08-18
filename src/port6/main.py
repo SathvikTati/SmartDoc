@@ -24,6 +24,7 @@ from port6.services.history import service as history
 from port6.services.schemas.admin import (
     ChatDetail,
     ChatPage,
+    RetrievalOptions,
     PromptResponse,
     PromptUpdate,
     QueryRunDetail,
@@ -53,6 +54,7 @@ from port6.services.schemas.query import (
     CompareResponse,
 )
 from port6.services.ingestion.service import process_document
+from port6.services.rag import pipelines
 from port6.services.rag.base import RagResult
 from port6.services.rag.system import (
     compare_modes,
@@ -337,27 +339,46 @@ async def ask(
         else []
     )
 
+    # Neither given means "whatever the settings say", which is how the
+    # defaults page reaches a new chat.
+    try:
+        selected = pipelines.resolve(
+            retrievers=request.retrievers,
+            agent=request.agent,
+            extra_tools=request.tools,
+            mode=request.mode,
+        )
+
+    except pipelines.InvalidComposition as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    top_k = request.top_k or get_int("defaults.top_k")
+
     result, resolution = await query_in_chat(
         question=request.question,
         turns=turns,
         previous_chunks=(
             chat_service.previous_chunks(chat_id) if turns else []
         ),
-        mode=request.mode,
-        top_k=request.top_k,
+        top_k=top_k,
         document_ids=document_ids,
+        composition=selected,
     )
 
     # Recorded after the fact and best-effort: a history write must never
     # turn a successful answer into a failed request.
     run_id = history.record_run(
         question=request.question,
-        mode=request.mode.value,
-        top_k=request.top_k,
+        mode=selected.family.value,
+        top_k=top_k,
         result=result,
         chat_id=chat_id,
         turn_index=turn_index,
         resolution=resolution.as_dict(),
+        pipeline=selected.id,
     )
 
     result.metadata["chat_id"] = chat_id
@@ -376,18 +397,45 @@ async def ask(
 async def ask_compare(
     request: CompareRequest,
 ):
-    """Run one question through several modes for side-by-side comparison."""
+    """Run one question through several compositions, side by side.
 
-    results = await compare_modes(
-        question=request.question,
-        modes=list(request.modes),
-        top_k=request.top_k,
-        document_ids=(
-            [str(value) for value in request.document_ids]
-            if request.document_ids
+    Give `configurations` to compare compositions you built — the same
+    retrievers with and without the agent, say. Omit it for the coarse
+    three-mode comparison, which is what the Compare page does.
+    """
+
+    try:
+        compositions = (
+            [
+                pipelines.Composition(
+                    retrievers=tuple(one.retrievers),
+                    agent=one.agent,
+                    planner=one.planner,
+                    extra_tools=tuple(one.tools or ()),
+                )
+                for one in request.configurations
+            ]
+            if request.configurations
             else None
-        ),
-    )
+        )
+
+        results = await compare_modes(
+            question=request.question,
+            modes=list(request.modes),
+            top_k=request.top_k,
+            document_ids=(
+                [str(value) for value in request.document_ids]
+                if request.document_ids
+                else None
+            ),
+            compositions=compositions,
+        )
+
+    except pipelines.InvalidComposition as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
 
     return CompareResponse(
         question=request.question,
@@ -579,26 +627,39 @@ async def reset_prompt(name: str):
         )
 
 
+@app.get(
+    "/pipelines",
+    response_model=RetrievalOptions,
+)
+async def retrieval_options():
+    """What a pipeline can be built from.
+
+    The retrievers, the tools an agent may be given, and a few presets
+    that fill the builder in. The UI composes from this rather than
+    choosing from a fixed list, so the whole space is reachable.
+    """
+
+    return pipelines.list_options()
+
+
 @app.get("/modes")
 async def list_modes():
-    """The retrieval modes available, for populating a UI selector."""
+    """The three coarse families, for an older client.
 
-    from port6.services.rag import agent, hybrid, naive
+    Superseded by GET /pipelines, which lists the strategies inside each
+    family. Kept because `mode` is still a valid way to ask, and derived
+    from the registry so the two cannot disagree.
+    """
+
+    from port6.services.rag.base import RagMode
+    from port6.services.rag.pipelines import MODE_DEFAULTS
 
     return [
         {
-            "mode": "naive",
-            "label": "Naive RAG",
-            "retrieval_method": naive.RETRIEVAL_METHOD,
-        },
-        {
-            "mode": "hybrid",
-            "label": "Hybrid + Hierarchical RAG",
-            "retrieval_method": hybrid.RETRIEVAL_METHOD,
-        },
-        {
-            "mode": "agentic",
-            "label": "Agentic RAG",
-            "retrieval_method": agent.RETRIEVAL_METHOD,
-        },
+            "mode": mode.value,
+            "label": MODE_DEFAULTS[mode].label,
+            "retrieval_method": MODE_DEFAULTS[mode].method,
+            "pipeline": MODE_DEFAULTS[mode].id,
+        }
+        for mode in RagMode
     ]

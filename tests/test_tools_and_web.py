@@ -200,7 +200,11 @@ def test_the_web_is_tried_only_after_the_documents_fail(monkeypatch):
 
     # agent.py imports the function by name, so the module under test is
     # what has to be patched.
-    monkeypatch.setattr(agent, "available_tools", lambda: {"web_search": None})
+    monkeypatch.setattr(
+        agent,
+        "available_tools",
+        lambda allowed=None: {"web_search": None},
+    )
 
     # Answered from the documents: never reach outside.
     assert route_after_answer({"answered": True}) is END
@@ -220,7 +224,7 @@ def test_no_web_fallback_when_the_tool_is_not_offered(monkeypatch):
     from port6.services.rag import agent
     from port6.services.rag.agent import route_after_answer
 
-    monkeypatch.setattr(agent, "available_tools", lambda: {})
+    monkeypatch.setattr(agent, "available_tools", lambda allowed=None: {})
 
     assert route_after_answer({"answered": False}) is END
 

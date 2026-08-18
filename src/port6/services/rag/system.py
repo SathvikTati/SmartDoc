@@ -13,8 +13,7 @@ import logging
 import time
 
 from port6.services.llm.errors import classify as classify_provider_error
-from port6.services.rag import agent, hybrid, naive
-from port6.services.rag import smalltalk
+from port6.services.rag import pipelines, smalltalk
 from port6.services.rag.base import RagMode, RagResult, RetrievedChunk
 from port6.services.rag.conversation import (
     REUSE,
@@ -27,13 +26,6 @@ from port6.services.settings.service import get_int, get_setting
 
 
 logger = logging.getLogger(__name__)
-
-
-RUNNERS = {
-    RagMode.NAIVE: naive.run,
-    RagMode.HYBRID: hybrid.run,
-    RagMode.AGENTIC: agent.run,
-}
 
 
 def resolve_mode(
@@ -96,17 +88,25 @@ async def query(
     mode: str | RagMode = RagMode.NAIVE,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    composition=None,
 ) -> RagResult:
     """Answer a question, optionally restricted to specific documents.
 
     `document_ids` is a hard scope: retrieval cannot reach outside it in
-    any mode. Passing none searches the whole library.
+    any pipeline. Passing none searches the whole library.
+
+    `composition` is what actually answers: which retrievers run, and
+    whether an agent sits on them. `mode` is the coarser control a chat
+    uses, and still works — it maps to the composition reproducing what
+    that mode used to do.
     """
 
     if not question or not question.strip():
         raise ValueError("Question cannot be empty")
 
-    resolved = resolve_mode(mode)
+    selected = composition or pipelines.resolve(mode=mode)
+
+    resolved = selected.family
 
     started = time.perf_counter()
 
@@ -119,7 +119,8 @@ async def query(
         return smalltalk_result(question, reply, resolved, started)
 
     try:
-        result = await RUNNERS[resolved](
+        result = await pipelines.run(
+            selected,
             question,
             top_k=top_k,
             document_ids=document_ids,
@@ -129,8 +130,8 @@ async def query(
         # A mode failing should return a usable result, not a 500, so the
         # comparison view can still show the other modes.
         logger.exception(
-            "Mode %s failed for question %r",
-            resolved.value,
+            "Pipeline %s failed for question %r",
+            selected.id,
             question,
         )
 
@@ -142,20 +143,22 @@ async def query(
         answer = (
             provider_error.message
             if provider_error
-            else f"The {resolved.value} pipeline failed: {exc}"
+            else f"The {selected.label} pipeline failed: {exc}"
         )
 
         return RagResult(
             question=question,
             answer=answer,
             answered=False,
-            retrieval_method=resolved.value,
+            retrieval_method=selected.method or selected.label,
             latency_ms=round(
                 (time.perf_counter() - started) * 1000,
                 2,
             ),
             metadata={
                 "mode": resolved.value,
+                "pipeline": selected.id,
+                "pipeline_label": selected.label,
                 "error": str(exc),
                 **(
                     {"provider_error": provider_error.as_dict()}
@@ -174,6 +177,8 @@ async def query(
         )
 
     result.metadata.setdefault("mode", resolved.value)
+    result.metadata.setdefault("pipeline", selected.id)
+    result.metadata.setdefault("pipeline_label", selected.label)
 
     return result
 
@@ -183,24 +188,36 @@ async def compare_modes(
     modes: list[str | RagMode] | None = None,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    compositions: list | None = None,
 ) -> dict[str, RagResult]:
-    """Run the same question through several modes for side-by-side review."""
+    """Run one question through several strategies, side by side.
 
-    selected = [
-        resolve_mode(mode)
-        for mode in (modes or list(RagMode))
-    ]
+    Keyed by pipeline id when pipelines are named, and by mode otherwise,
+    so the existing three-mode comparison keeps the shape it had.
+    """
+
+    if compositions:
+        chosen = list(compositions)
+
+    else:
+        chosen = [
+            pipelines.MODE_DEFAULTS[resolve_mode(mode)]
+            for mode in (modes or list(RagMode))
+        ]
 
     # Sequential on purpose: a local model server handles one generation at
     # a time, so running them together only makes each one slower.
     results = {}
 
-    for mode in selected:
-        results[mode.value] = await query(
+    for one in chosen:
+
+        key = one.id if compositions else one.family.value
+
+        results[key] = await query(
             question,
-            mode=mode,
             top_k=top_k,
             document_ids=document_ids,
+            composition=one,
         )
 
     return results
@@ -214,9 +231,10 @@ async def query_in_chat(
     question: str,
     turns: list[dict],
     previous_chunks: list[RetrievedChunk],
-    mode: str | RagMode = RagMode.HYBRID,
+    mode: str | RagMode | None = None,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    composition=None,
 ) -> tuple[RagResult, Resolution]:
     """Answer a question in the context of the conversation it arrived in.
 
@@ -240,7 +258,7 @@ async def query_in_chat(
             smalltalk_result(
                 question,
                 reply,
-                resolve_mode(mode),
+                resolve_mode(mode or RagMode.HYBRID),
                 time.perf_counter(),
             ),
             Resolution(
@@ -258,6 +276,7 @@ async def query_in_chat(
             mode=mode,
             top_k=top_k,
             document_ids=document_ids,
+            composition=composition,
         )
         return result, Resolution(
             relation="new_topic",
@@ -337,6 +356,7 @@ async def query_in_chat(
         mode=mode,
         top_k=top_k,
         document_ids=document_ids,
+        composition=composition,
     )
 
     # The user asked their question, not the rewritten one.
