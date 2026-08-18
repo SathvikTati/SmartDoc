@@ -245,6 +245,66 @@ expense reimbursement
 
 ---
 
+## `/pipelines` — build a pipeline and test it
+
+Pick the retrievers, decide whether an agent sits on top, run two to four
+side by side.
+
+**Keyword wins.** Build `Semantic` against `Keyword`:
+```
+What does SEC-1177 cover?
+```
+→ semantic **declines** · keyword answers. The code has no semantic
+neighbourhood to search.
+
+**Semantic wins.** Same two:
+```
+Can I work from another country for a while?
+```
+→ keyword **declines** · semantic answers. The document shares almost
+none of these words.
+
+**Both together.** Tick `Semantic` and `Keyword` in one pipeline — it
+answers both.
+
+**What the agent buys.** Build the same retrievers twice, agent off in
+one and on in the other:
+```
+What does SEC-1177 cover?
+```
+→ the agent may only plan over the retrievers you gave it, so this varies
+one thing. Untick "Model picks the tools" to see the planning call's cost
+— roughly 2.9 s against 1.3 s for the same answer.
+
+**Tool selection.** With the agent on, tick `Calculator`:
+```
+I have taken 8 days of leave. How many do I have remaining?
+```
+→ the sum runs after retrieval either way; selecting the tool lets the
+agent ask for it as well.
+
+---
+
+## Header → Defaults
+
+Set the mode and Top-K a new chat starts with. Chats offer the three families; the Pipelines page is where the individual strategies are compared. Saved server-side, so
+they also apply to an API request that names neither.
+
+```bash
+curl -X PUT localhost:8000/settings/defaults.mode \
+  -H 'Content-Type: application/json' -d '{"value": "naive"}'
+
+# what a pipeline can be built from
+curl -s localhost:8000/pipelines | python3 -m json.tool | head -30
+
+# compose one directly
+curl -X POST localhost:8000/ask -H 'Content-Type: application/json' \
+  -d '{"question":"What does SEC-1177 cover?",
+       "retrievers":["keyword"],"agent":true,"tools":["calculate"]}' 
+```
+
+---
+
 ## `/compare`
 
 ```

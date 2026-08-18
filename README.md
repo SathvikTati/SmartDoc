@@ -62,6 +62,9 @@ Plain JavaScript — React 19, Vite, Tailwind, React Router. No TypeScript.
   and the heading tree recovered from the file.
 - **Search** — raw chunk retrieval with no model involved, in semantic,
   keyword or hybrid mode, showing which retriever found what and at what rank.
+- **Pipelines** — the same question through two to four retrieval
+  strategies, with a metrics table. Where you find out whether the
+  hierarchical stage is earning its cost.
 - **Compare** — the same question through all three modes, with a metric
   table, the three answers, and each mode's trace.
 
@@ -207,6 +210,52 @@ promise from one citing only your documents. Turn it on with
 `PUT /settings/web.enabled`. Web sources are labelled in the context, in
 the citations and in the UI, and a question scoped to specific documents
 never reaches the web at all.
+
+## Retrieval pipelines
+
+There is one pipeline. What varies is what you put in it: which
+retrievers run, whether an agent sits on top, and which tools that agent
+may reach for.
+
+| Retriever | Good at | Blind to |
+|---|---|---|
+| `semantic` | a paraphrase sharing no words with the document | an exact code with no useful neighbourhood |
+| `keyword` | codes, names, rare words | a question phrased in different vocabulary |
+| `hierarchical` | a long structured document | anything whose document does not rank first |
+
+Combine them freely. Two or more are fused by rank — RRF rather than
+score averaging, because a Chroma distance is better when lower and a
+BM25 score better when higher.
+
+**The agent is a layer, not an alternative.** With it on, the retrievers
+you chose become the tools it may plan over, plus any extras you select
+(`document_lookup`, `calculate`, `web_search`). It adds tool selection,
+evidence validation and a retry — and nothing else changes. That is what
+makes *"what does the agent buy me?"* answerable: hold retrieval constant
+and toggle one flag.
+
+```json
+POST /ask
+{"question": "...", "retrievers": ["keyword"], "agent": true,
+ "tools": ["calculate"]}
+```
+
+`GET /pipelines` returns what a pipeline can be built from — the
+retrievers, the tools, and a few presets that fill the builder in. The
+presets are shortcuts, not special cases: anything they do is reachable
+by hand.
+
+The `/pipelines` page builds two to four and runs one question through
+all of them. Two questions separate them reliably on the demo corpus:
+*"What does SEC-1177 cover?"* (keyword answers, semantic declines) and
+*"Can I work from another country for a while?"* (the reverse).
+
+**Chats stay on the three modes.** The composer and the header defaults
+(`defaults.mode`, `defaults.top_k`) offer naive, hybrid and agentic and
+nothing more — composing a pipeline is a retrieval question, and the
+Pipelines page is where you can answer it by running both. Each mode maps
+to the composition reproducing what it always did, so `mode` still works
+for an existing client.
 
 ## Tracing
 

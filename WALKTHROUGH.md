@@ -19,7 +19,10 @@ Or run everything at once:
 uv run python demo/run_demo.py
 ```
 
-The corpus is in [`demo/documents/`](demo/documents/) — six documents in four formats.
+The corpus is in [`demo/documents/`](demo/documents/) — ten documents in four formats, about 108 KB, indexing to roughly 200 chunks.
+
+For a demo *of the product* rather than a trace of the code, see
+[demo/WALKTHROUGH.md](demo/WALKTHROUGH.md).
 
 ---
 
@@ -122,9 +125,9 @@ Status → `READY`.
 
 The answer is **22 days**, in `hr_policy.md` section 1.1.
 
-## 2.1 Mode 1 — Naive
+## 2.1 Semantic alone
 
-`rag/naive.py`: embed the question, take the top-k chunks, generate.
+Embed the question, take the top-k chunks, generate. One retriever, so there is nothing to fuse — its own ordering is the ranking.
 
 ```
 SEM: hr_policy.md 0.2761 · hr_policy.md 0.5410 · policy.docx 0.5808 · meeting_notes.txt 0.6170
@@ -134,9 +137,9 @@ answer: "Employees accrue 22 days of paid annual leave per calendar year.
 cite:   hr_policy.md, Section 1.1 Annual Leave
 ```
 
-Correct — but notice what else got in. `meeting_notes.txt` has an "ANNUAL LEAVE" heading that says nothing concrete, and `policy.docx` is unrelated. Naive ranks purely on embedding distance, so near-miss text competes for context slots.
+Correct — but notice what else got in. `meeting_notes.txt` has an "ANNUAL LEAVE" heading that says nothing concrete. A single dense retriever ranks purely on embedding distance, so near-miss text competes for context slots.
 
-## 2.2 Mode 2 — Hybrid + Hierarchical
+## 2.2 Semantic + Hierarchical + Keyword
 
 ### Stage 1 — documents, from Postgres only
 
@@ -195,7 +198,7 @@ answer: "Employees accrue 22 days of paid annual leave per calendar year. [1]"
 cite:   hr_policy.md, Section 1.1 Annual Leave
 ```
 
-## 2.3 Mode 3 — Agentic
+## 2.3 The same, with an agent on top
 
 The graph runs `retrieval_planner → tool_execution → evidence_validation → context_builder → answer_generation`.
 
@@ -216,7 +219,7 @@ The model picked `document_lookup` — the right tool for a catalogue question �
 
 ---
 
-# Part 3 — Where each mode earns its keep
+# Part 3 — Where each pipeline earns its keep
 
 ## 3.1 Exact codes: *"What is control SEC-4412?"*
 

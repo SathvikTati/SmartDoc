@@ -1,6 +1,8 @@
 # PORT-6 Workflows
 
-How data moves through the system. Two pipelines: **ingestion** (upload → searchable) and **query** (question → cited answer, in one of three modes).
+How data moves through the system. Two paths: **ingestion** (upload → searchable) and **query** (question → cited answer, through one of several retrieval pipelines).
+
+The UI has its own counterpart in [frontend/WORKFLOW.md](frontend/WORKFLOW.md).
 
 ---
 
@@ -13,6 +15,7 @@ How data moves through the system. Two pipelines: **ingestion** (upload → sear
 | Postgres | — | document rows and metadata |
 | Chroma | — | chunk vectors, on disk in `chroma_data/` |
 | Ollama / OpenAI | — | embeddings and generation |
+| Phoenix *(optional)* | `uvx --python 3.12 --from arize-phoenix phoenix serve` | trace viewer. The API emits spans; it does not host the UI |
 
 There is no separate worker. Ingestion runs in a FastAPI `BackgroundTasks` thread inside the API process.
 
@@ -168,34 +171,105 @@ document.
 
 ## Query
 
-All three modes share the same entry point, prompt, and citation handling. Only retrieval differs.
+Every pipeline shares the same entry point, the same prompt and the same citation handling. Only retrieval differs — which is the point: a difference in the answer is a difference in what was retrieved, not in how it was written up.
 
 ```python
 from port6.services.rag.system import query
 
-result = await query(question, mode="naive" | "hybrid" | "agentic", top_k=5)
+result = await query(
+    question,
+    composition=Composition(retrievers=("semantic", "keyword")),
+    top_k=5,
+)
 ```
 
-Every mode returns the same `RagResult`:
+All of them return the same `RagResult`:
 
 ```
 answer  answered  citations  retrieved_chunks
 retrieval_method  latency_ms  metadata  debug
 ```
 
-### Mode 1 — Naive
+### Choosing a pipeline
+
+Three things can decide it, in order:
+
+1. an explicit `pipeline` on the request
+2. a bare `mode`, which maps to the pipeline reproducing what that mode used to do
+3. neither — the configured `defaults.mode`, mapped through the families below
+
+That last one is why the header settings reach a new chat *and* an API call that names nothing. The setting is a default, not a lock.
+
+The chat composer offers the three modes. The full list is reachable from the **Pipelines** page, which exists to compare them.
+
+There is one pipeline. What varies is what you put in it:
+
+| Retriever | Good at | Blind to |
+|---|---|---|
+| `semantic` | a paraphrase sharing no words with the document | an exact code with no useful neighbourhood |
+| `keyword` | codes, names, rare words | a question phrased in different vocabulary |
+| `hierarchical` | a long structured document | anything whose document does not rank first |
+
+Any combination is valid. The composition's identity is derived, not chosen from a list — `semantic+keyword`, `agent[calculate]:keyword` — and that slug is what gets recorded on the query run, so a stored answer says exactly what produced it.
+
+This used to be a registry of seven named pipelines, which was the wrong shape. Three retrievers combine seven ways and the agent multiplies that again; naming a handful makes the rest unreachable and implies the named ones are special.
+
+**The agent is a layer, not an alternative.** With it on, the chosen retrievers become the tools it may plan over, plus any extras selected (`document_lookup`, `calculate`, `web_search`). It adds tool selection, evidence validation and a retry, and nothing else changes — so a with-agent against without-agent comparison varies one thing.
+
+| Family | What counts as it |
+|---|---|
+| naive | one retriever, no agent |
+| hybrid | two or more retrievers, no agent |
+| agentic | any composition with the agent on |
+
+### Before retrieval
+
+Three checks run first, in every pipeline.
+
+```mermaid
+flowchart TD
+    Q[question] --> SM{a bare pleasantry?}
+    SM -->|yes| CANNED[canned reply, no retrieval, 0 ms]
+    SM -->|no| CONV{in a chat with prior turns?}
+    CONV -->|yes| RES[resolve: new topic or follow-up]
+    CONV -->|no| AGG
+    RES --> AGG{a library-wide question?}
+    AGG -->|yes| COV[coverage retrieval, grouped by document]
+    AGG -->|no| PIPE[the selected pipeline]
+```
+
+`hello` is answered directly because otherwise it embeds, returns the five least-unrelated chunks and is refused — which reads as a broken system rather than an honest one. Matching is exact after normalisation, so `hi, how much annual leave?` is treated as the question it is.
+
+### Composing the retrievers
 
 ```mermaid
 flowchart LR
-    Q[question] --> E[embed query]
-    E --> S[Chroma top-k]
-    S --> G[LLM + numbered sources]
-    G --> A[answer + citations]
+    Q[question] --> SEM[semantic]
+    Q --> HIER[hierarchical]
+    Q --> KW[keyword / BM25]
+    SEM --> DENSE[dense side]
+    HIER --> DENSE
+    KW --> SPARSE[sparse side]
+    DENSE --> RRF[RRF fusion]
+    SPARSE --> RRF
+    RRF --> RANK[rerank: agreement breaks ties]
+    RANK --> G[generation]
 ```
 
-No keyword matching and no hierarchy — a chunk is ranked purely on embedding distance to the question. This is the baseline the other modes improve on.
+Hierarchical results join the dense side because both rank by embedding distance, which makes them comparable to each other and not to BM25. A pipeline naming one retriever skips fusion entirely — its own ordering *is* the ranking.
 
-### Mode 2 — Hybrid + Hierarchical
+RRF rather than score averaging, because a Chroma distance is better when lower and a BM25 score is better when higher. Ranks are comparable; raw scores are not.
+
+### Where each retriever earns its place
+
+| Question | Keyword | Semantic |
+|---|---|---|
+| *"What does SEC-1177 cover?"* | finds it | no useful neighbourhood — **declines** |
+| *"Can I work from another country for a while?"* | shares almost no vocabulary — **declines** | finds it |
+
+That is the whole argument for hybrid, and it is reproducible on the demo corpus from the `/pipelines` page.
+
+### Hierarchical narrowing, stage by stage
 
 ```mermaid
 flowchart TD
@@ -266,7 +340,11 @@ annual leave"* does not match — and switches to coverage retrieval:
 Agentic reaches the same thing through the `aggregate_search` tool, which
 the planner selects for library-wide questions.
 
-### Mode 3 — Agentic (LangGraph)
+**Top K is a chunk budget, here as everywhere else.** Coverage decides how those chunks are *spread* — every matching document gets its first before any gets a second — not how many there are. Asking for 5 returns 5, spread across up to 5 documents.
+
+When more documents match than the budget can cover, the weakest are dropped and the count is reported (`3 of 10`), because a coverage answer that quietly dropped seven documents reads as though it had covered everything.
+
+### The agentic family (LangGraph)
 
 ```mermaid
 stateDiagram-v2
@@ -279,9 +357,13 @@ stateDiagram-v2
     answer_generation --> [*]
 ```
 
-**Graph state** (`AgentState`): `query`, `selected_tools`, `plan_reason`, `tool_runs`, `retrieved_chunks`, `retrieval_metadata`, `validation_result`, `attempts`, `final_context`, `answer`, `citations`, `stages`.
+**Graph state** (`AgentState`): `query`, `selected_tools`, `plan_reason`, `tool_runs`, `retrieved_chunks`, `retrieval_metadata`, `validation_result`, `attempts`, `aggregated`, `web_attempted`, `final_context`, `conflicts`, `answer`, `citations`, `stages`, plus `use_planner` and `max_attempts` from the pipeline.
 
-**The five tools:**
+**The planner is optional.** A composition with `planner: false` chooses tools by rule, runs once and never retries. Running it beside the planned version is how you find out what the planning call is buying: on the demo corpus it is roughly 2.9 s against 1.3 s for the same answer.
+
+**The allow-list is the important part.** `allowed_tools` comes from the composition's retrievers, so a keyword-only composition cannot be handed `semantic_search` — not by the planner, and not by the rule-based fallback either, which filters its preferences through the same list. `hybrid_search` appears only when both halves are present. `aggregate_search` is always available, because any composition has to be able to answer a library-wide question. Selecting `web_search` still cannot switch the web on: the composition asks, `web.enabled` decides.
+
+**The eight tools:**
 
 | Tool | Use |
 |---|---|
@@ -339,7 +421,7 @@ Only the tools chosen and a one-line plan reason are exposed. Never the model's 
 
 ## Answer generation and citations
 
-`services/rag/generation.py`, shared by all three modes.
+`services/rag/generation.py`, shared by every pipeline.
 
 Chunks are renumbered `1..n` and rendered with a provenance header:
 
@@ -350,11 +432,39 @@ Employees accrue 22 days of paid annual leave per calendar year.
 
 The filename and section path are in the header so the model can attribute each statement to a specific part of a specific document, which is what the `[n]` marker then resolves back to. The section path comes from the document's *own headings*, so it still reads as prose even though nothing extracts a title.
 
-Three guards on the output:
+Two source types are labelled rather than blended in. A `WEB` header marks a result from the public internet; a `CALCULATION` header marks arithmetic this system worked out. Both are evidence, and neither came from a document someone uploaded.
+
+### On the way in
+
+**A bare topic becomes a question.** `leave policy` names no answer to look for, so the prompt — told to reply `NOT_FOUND` when the sources lack *the answer* — would read five perfectly good chunks and decline. A short phrase with no question mark and no leading question word is rewritten to *"What do the documents say about X?"* before generating. Retrieval still uses the words as typed.
+
+**Arithmetic is worked out, not predicted.** If the question looks numeric, an expression is written from the question *and the retrieved sources*, evaluated by walking an AST against an allow-list, and offered as one more numbered source. Running after retrieval is what lets a formula living in a document be applied rather than guessed — `overtime pay = rate × 1.5 × hours` gives `20 * 1.5 * 6`, where the same step run before retrieval produced `20 * 6`.
+
+**Disagreements are surfaced.** Where two documents state different figures for the same thing, the most recently uploaded wins and the answer says what the older one said. Recency is a heuristic — nothing in a file states that it supersedes another — which is exactly why the older figure is reported rather than dropped.
+
+### On the way out
 
 1. **`NOT_FOUND` sentinel** — if the sources do not contain the answer, the model replies with that exact token, which becomes `answered: false` with no citations rather than a guess.
 2. **Hallucinated citations dropped** — a `[7]` when only 4 sources exist is removed and logged, not returned as a dead link.
 3. **Degenerate answers retried** — small models sometimes answer a list question with literally `[2]`. If stripping citation markers leaves under 15 letters, it retries once with an explicit nudge, then reports unanswered.
+4. **A cited calculation credits its sources** — the chunk that supplied the 22 is added to the citations, so the document doing the work is not reported as retrieved-but-unused.
+
+---
+
+## Defaults
+
+Two settings decide what a request that names nothing gets:
+
+| Setting | Default | Applies to |
+|---|---|---|
+| `defaults.mode` | `hybrid` | a new chat, and any `/ask` naming neither a mode nor a pipeline |
+| `defaults.top_k` | `5` | the same |
+
+A **mode**, not a pipeline. A chat picks between the three families; picking between the strategies inside one is a retrieval question, and the Pipelines page is where you can answer it by running both on the same question. Storing a pipeline id here would allow a default the chat UI could not display.
+
+They live in Postgres, not in the browser. A default held in `localStorage` would be a different default on a colleague's machine, would vanish on a cache clear, and would not apply to a question asked over the API. Editable from the header dialog or `PUT /settings/{key}`, and live on the next request — the settings cache is invalidated on write, so no restart.
+
+All 25 settings and 8 prompts work the same way. Seeding advances a row that still matches its shipped default and never touches one that has been edited, so a release can improve a prompt without overwriting your changes.
 
 ---
 
@@ -367,5 +477,10 @@ Three guards on the output:
 | Document with no summary | still retrievable by chunk; stage 1 cannot rank it |
 | Structure file deleted from `uploads/` | chunks as one unstructured section |
 | One agent tool throws | logged, other tools continue |
-| A whole mode throws | `system.query` returns a `RagResult` carrying the error, so a comparison still renders the other modes |
+| A whole pipeline throws | `system.query` returns a `RagResult` carrying the error, so a comparison still renders the others |
 | Summariser fails | document still reaches `READY`, `summary` stays null |
+| Provider unreachable or key expired | classified and reported as a sentence with the fix, not a traceback |
+| `defaults.mode` holds something that is not a mode | logged, falls back to `hybrid` |
+| Web search unavailable or failing | returns nothing; the tool is withheld from the planner rather than offered and left to fail |
+| Phoenix collector down | swallowed. Observability that can take the service down is worse than none |
+| Chunk-count tally fails | the document list still renders, with counts at zero |

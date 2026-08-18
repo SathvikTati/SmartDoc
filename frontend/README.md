@@ -35,16 +35,28 @@ ports.
 
 ---
 
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [CODEBASE.md](CODEBASE.md) | What each module is and where to change things |
+| [WORKFLOW.md](WORKFLOW.md) | How a question, an upload and an error travel through the UI |
+| [../README.md](../README.md) | The system as a whole |
+
+---
+
 ## Routes
 
 | Route | Purpose |
 |---|---|
 | `/` | Redirects to `/ask` — the home page |
-| `/ask` | Cited answers. Each question is its own investigation, not a chat turn |
+| `/ask` | Cited answers, in a conversation. Follow-ups are resolved against earlier turns; it is still not a chat transcript |
 | `/files` | The document library — every file in one flat list |
 | `/files/:documentId` | One document — file facts, summary, chunk and page counts, heading tree |
 | `/search` | Raw chunk retrieval with no model in the loop |
 | `/compare` | One question through all three modes, side by side |
+| `/pipelines` | One question through two to four retrieval strategies, with a metrics table |
+| `/history` | Every run, grouped by conversation |
 | `*` | A real 404 page, reached through the router rather than a reload |
 
 ---
@@ -107,3 +119,17 @@ one by one would be a fiction.
 a generated summary — nothing infers a title, a type, a department or a
 version. Citations therefore read *hr_policy.md, Section 1.1 Annual Leave*,
 with the section path coming from the document's own headings.
+
+---
+
+## Tests
+
+```bash
+npm test          # once
+npm run test:watch
+```
+
+vitest + jsdom + Testing Library. They render each page inside the real
+provider stack with the API mocked, because `npm run build` compiles JSX
+without ever executing it — a page can build cleanly and still throw on
+first paint.

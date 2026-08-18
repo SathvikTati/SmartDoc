@@ -2,32 +2,40 @@
 
 What each file is and what it does.
 
+The frontend has its own pair of documents:
+[frontend/CODEBASE.md](frontend/CODEBASE.md) for the module map and
+[frontend/WORKFLOW.md](frontend/WORKFLOW.md) for how a question travels
+through the UI.
+
 ```
 port6/
 ├── config.yaml                 tunable settings (non-secret)
 ├── .env                        secrets and provider selection
 ├── alembic/                    database migrations
-├── demo/                       runnable demo: corpus + run_demo.py
+├── demo/                       runnable demo: corpus, script, walkthrough
+├── frontend/                   the React app — the primary UI
 └── src/port6/
     ├── config.py               loads config.yaml + .env, resolves providers
     ├── main.py                 FastAPI app: all HTTP endpoints
-    ├── frontend/               Streamlit UI, internal (talks to the API over HTTP)
+    ├── frontend/               Streamlit UI, retained as a debugging surface
     └── services/
         ├── files/              upload validation
         ├── parsers/            file -> text + structured blocks
         ├── structure/          blocks -> section tree
         ├── chunking/           sections -> chunks with metadata
         ├── embeddings/         embedding model factory
-        ├── llm/                chat model factory
+        ├── llm/                chat model factory, provider error classifier
         ├── vector/             Chroma wrapper
+        ├── web/                keyless web search, off by default
+        ├── tracing/            Phoenix spans, off by default
         ├── ingestion/          the upload -> READY pipeline
-        ├── rag/                the three retrieval modes
+        ├── rag/                pipelines, retrieval, generation, the agent
         ├── documents/          document CRUD
-        ├── retrieval/          raw retrieval for /search (semantic|keyword|hybrid)
+        ├── retrieval/          raw retrieval for /search
         ├── settings/           DB-backed prompts and runtime tuning
-        ├── history/            persisted query runs
+        ├── history/            persisted query runs and conversations
         ├── db/                 SQLAlchemy engine and session
-        ├── model/              ORM model
+        ├── model/              ORM models
         └── schemas/            Pydantic request/response models
 ```
 
@@ -37,24 +45,39 @@ port6/
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`src/port6/main.py`](src/port6/main.py) | 209 | FastAPI app. Endpoints: `/health`, `/upload`, `/documents`, `/documents/{id}`, `/documents/{id}/content`, `/documents/{id}/summary`, `/documents/{id}/structure`, `DELETE /documents/{id}`, `/search`, `/ask`, `/ask/compare`, `/modes`. Sets CORS from `PORT6_CORS_ORIGINS` so the React app can call it. Upload hands ingestion to `BackgroundTasks`; `/ask` delegates to `rag.system.query`. |
-| [`src/port6/config.py`](src/port6/config.py) | 307 | Loads `config.yaml` and `.env`. Resolves `LLM_PROVIDER` / `EMBEDDINGS_PROVIDER` (openai \| ollama), requires `OPENAI_API_KEY` only when OpenAI is actually selected, and namespaces the Chroma collection per embedding model so OpenAI and Ollama vectors never share a collection. Exports the `*_config` dicts every service reads. |
+| [`src/port6/main.py`](src/port6/main.py) | 646 | FastAPI app and every endpoint. Documents, `/search`, `/ask`, `/ask/compare`, `/pipelines`, `/chats`, `/history`, `/settings`, `/prompts`. Upload hands ingestion to `BackgroundTasks`; `/ask` resolves a pipeline, then delegates to `rag.system.query_in_chat`. Starts Phoenix tracing in the lifespan, before the first chain is built. |
+| [`src/port6/config.py`](src/port6/config.py) | 267 | Loads `config.yaml` and `.env`. Resolves `LLM_PROVIDER` / `EMBEDDINGS_PROVIDER`, requires `OPENAI_API_KEY` only when OpenAI is selected, and namespaces the Chroma collection per embedding model so two embedders never share vectors. |
 
 ---
 
-## Frontend
+## Retrieval
 
-The **React app in [`frontend/`](frontend/)** is the primary UI — plain
-JavaScript, Vite, Tailwind, React Router. It is documented separately in
-[frontend/README.md](frontend/README.md), which covers its routes, its module
-layout, and how the flat file explorer works.
-
-The Streamlit app below is retained as an internal debugging surface.
+The centre of the system. A **pipeline** is a named composition of
+retrievers; `RagMode` is the coarse family it belongs to.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`frontend/app.py`](src/port6/frontend/app.py) | ~925 | Streamlit UI. Five tabs: **Ask** (mode selector, cited answer, retrieval trace), **Compare modes** (all three side by side with a summary table), **Library** (summaries, delete), **Upload**, **Search**. Renders `[n]` markers as superscript pills, and escapes all document text before display. |
-| [`frontend/api.py`](src/port6/frontend/api.py) | 262 | HTTP client. No database or model access of its own, so the UI can point at a remote API via `PORT6_API_URL`. Maps file extensions to MIME types (browsers under-report Markdown) and turns FastAPI error bodies into readable messages. |
+| [`rag/pipelines.py`](src/port6/services/rag/pipelines.py) | 560 | **The composition, and the runner.** A `Composition` is a set of retrievers plus an optional agent and its tools — not a fixed registry, because three retrievers combine seven ways and naming a handful makes the rest unreachable. `allowed_tools` is what stops the agent widening retrieval. `resolve()` decides what answers a request: an explicit composition, else the mode's historical equivalent, else `defaults.mode`. Presets are shortcuts. |
+| [`rag/system.py`](src/port6/services/rag/system.py) | 405 | **The public entry point.** `query()` and `query_in_chat()`. Short-circuits small talk before retrieval, resolves the pipeline, and turns a pipeline failure into a `RagResult` carrying the error rather than raising — so a comparison still renders the others. |
+| [`rag/base.py`](src/port6/services/rag/base.py) | 133 | The shared contract. `RagMode`, `RetrievedChunk` (content, provenance, which retriever found it, `url` for web, `uploaded_at` for recency, `derived_from` for a calculation's sources) and `RagResult`. |
+| [`rag/retrievers.py`](src/port6/services/rag/retrievers.py) | 452 | The primitives. `semantic_search()` over Chroma, `KeywordIndex` (BM25, cached and rebuilt when the collection size changes, thread-safe) and `fuse()` — Reciprocal Rank Fusion, because a Chroma distance and a BM25 score are not comparable but their ranks are. |
+| [`rag/hierarchical.py`](src/port6/services/rag/hierarchical.py) | 348 | Progressive narrowing. Ranks documents from Postgres without touching the chunk index, then searches only inside them, then only inside the chosen sections. |
+| [`rag/agent.py`](src/port6/services/rag/agent.py) | 738 | The LangGraph state machine: plan → execute → validate → build context → answer, with a retry edge back to the planner and a one-shot web fallback. A composition with `planner: false` turns off the planner call and the retry, so the cost of planning is measurable. `allowed_tools` restricts what the graph may reach for, so turning the agent on never widens retrieval. |
+| [`rag/tools.py`](src/port6/services/rag/tools.py) | 400 | Eight tools, each a LangChain `@tool` so its name, description and schema have one definition. Selected by prompt rather than function calling — the local model emits its choice as JSON content and leaves `tool_calls` empty. `available_tools(allowed)` applies two gates: the server's setting, and the composition's allow-list. |
+| [`rag/generation.py`](src/port6/services/rag/generation.py) | 394 | Shared by every pipeline. Builds numbered sources, labels web and calculation sources distinctly, resolves `[n]` markers back to chunks, drops hallucinated numbers, handles `NOT_FOUND`, retries a citation-only answer once, and rewrites a bare topic into a question before generating. |
+| [`rag/validation.py`](src/port6/services/rag/validation.py) | 196 | Evidence validation in three bands: reject below `validation.min_overlap`, accept above `validation.skip_model_above` without a model call, ask the model only in between. Scores content words, not the scaffolding of the question. |
+
+### Question shaping
+
+Applied before or around retrieval, in every pipeline.
+
+| File | Lines | What it does |
+|---|---:|---|
+| [`rag/smalltalk.py`](src/port6/services/rag/smalltalk.py) | 371 | Greetings, thanks, farewells and "what can you do?" answered directly, with no retrieval and no model call. Matching is exact after normalisation, so "hi, how much annual leave?" is treated as the question it is. |
+| [`rag/conversation.py`](src/port6/services/rag/conversation.py) | 320 | Decides whether a question continues the conversation or starts a new topic, rewrites a follow-up to stand alone, and picks `fresh` / `combine` / `reuse`. Rules first, so most questions cost no model call, and both the rules and the fallback are biased toward ignoring prior context. |
+| [`rag/aggregation.py`](src/port6/services/rag/aggregation.py) | 316 | Cross-document questions. Detects them, separates the topic from the asking-about-the-library scaffolding, retrieves for coverage rather than depth, and groups the context by document with each excerpt clipped. |
+| [`rag/calculator.py`](src/port6/services/rag/calculator.py) | 488 | Arithmetic, evaluated by walking an AST against an allow-list — never `eval`, because the expression is written by a model. Runs *after* retrieval so a formula living in a document is applied rather than guessed, records which chunks its figures came from, and rejects a bare literal as the model having done the sum itself. |
+| [`rag/conflict.py`](src/port6/services/rag/conflict.py) | 308 | Two documents giving different figures for the same thing. Resolves by upload recency and reports what the older one said, because nothing in a file states that it supersedes another. |
 
 ---
 
@@ -62,38 +85,13 @@ The Streamlit app below is retained as an internal debugging surface.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`files/filevalidator.py`](src/port6/services/files/filevalidator.py) | 320 | `validate_files()` — the five upload gates: count, size, MIME, magic bytes, exact-hash duplicate, content-hash duplicate. Saves to `uploads/` with a UUID prefix and inserts the document row. |
+| [`files/filevalidator.py`](src/port6/services/files/filevalidator.py) | 320 | The upload gates: count, size, MIME, magic bytes, exact-hash duplicate, content-hash duplicate. Saves to `uploads/` with a UUID prefix and inserts the row. |
 | [`files/magicbytevalidator.py`](src/port6/services/files/magicbytevalidator.py) | 29 | Reads the real file header. A declared `application/pdf` that does not start with `%PDF` is rejected. |
-| [`files/filehash.py`](src/port6/services/files/filehash.py) | 28 | `calculate_sha256` (bytes) and `calculate_content_sha256` (extracted text). The second catches the same document uploaded as PDF and DOCX. |
-| [`parsers/parser.py`](src/port6/services/parsers/parser.py) | 399 | PDF / DOCX / TXT / MD → `ParsedDocument` with `.text` **and** `.blocks`. Each `ParsedBlock` carries `page_number` and `heading_level`. Headings come from DOCX styles and Markdown levels where available, and from `detect_heading_level()` (numbered, ALL CAPS, Title Case) for PDF and TXT. |
-| [`structure/service.py`](src/port6/services/structure/service.py) | 152 | `build_sections()` — walks blocks with a heading stack to build the document → section → subsection tree. Keeps heading-only sections so children's `parent_section_id` never dangles; `content_sections()` filters to the ones worth chunking. |
-| [`chunking/service.py`](src/port6/services/chunking/service.py) | 154 | Splits **within each section**, so a chunk never straddles two unrelated parts of a policy. Stamps the section hierarchy onto every chunk and drops `None` values that Chroma would reject. |
-| [`ingestion/service.py`](src/port6/services/ingestion/service.py) | ~330 | `process_document()` — the background pipeline: PROCESSING → chunks → embed → summarise → READY, with FAILED on error. Synchronous on purpose so FastAPI runs it in a worker thread instead of on the event loop. |
-
-| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 250 | The shipped value for every setting and prompt. Seeded into the database on startup, insert-only, so an edit survives a restart. |
-| [`settings/service.py`](src/port6/services/settings/service.py) | 430 | Reads and writes them, cached in process and invalidated on write. `_check_variables` rejects a prompt edit that drops a placeholder the pipeline supplies — that failure would otherwise surface as a confidently wrong answer. |
-| [`history/service.py`](src/port6/services/history/service.py) | 200 | Records each answered question with its full result, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
-| [`history/chats.py`](src/port6/services/history/chats.py) | 300 | Conversations. Starts or finds the chat a question belongs to, loads the recent turns a follow-up is resolved against, and rebuilds the previous turn's chunks from its stored result. |
-| [`rag/conversation.py`](src/port6/services/rag/conversation.py) | 330 | Decides whether a question continues the conversation or starts a new topic, rewrites a follow-up to stand alone, and picks `fresh` / `combine` / `reuse`. Rules first so most questions cost no model call, and both the rules and the fallback are biased toward ignoring prior context. |
-| [`rag/aggregation.py`](src/port6/services/rag/aggregation.py) | 260 | Cross-document questions. Detects them, separates the topic from the asking-about-the-library scaffolding, retrieves for coverage rather than depth, and groups the context by document. |
-| [`llm/errors.py`](src/port6/services/llm/errors.py) | 215 | Classifies a failure as provider / parse / storage / unknown, by exception name and message rather than by importing provider SDKs. Turns "processing failed" into "your API key expired", and says whether retrying will help. |
-
----
-
-## Retrieval — the three modes
-
-| File | Lines | What it does |
-|---|---:|---|
-| [`rag/base.py`](src/port6/services/rag/base.py) | 122 | The shared contract. `RagMode` enum, `RetrievedChunk` (content + full provenance + which retriever found it), `RagResult` (answer, citations, retrieved_chunks, retrieval_method, latency_ms, metadata, debug). `chunk_from_metadata()` tolerates missing fields so older documents still retrieve. |
-| [`rag/system.py`](src/port6/services/rag/system.py) | 120 | **The public entry point.** `query(question, mode, top_k)` dispatches to a mode; `compare_modes()` runs several. A failing mode returns a `RagResult` carrying the error rather than raising, so a comparison still renders the others. |
-| [`rag/retrievers.py`](src/port6/services/rag/retrievers.py) | 358 | The primitives. `semantic_search()` (Chroma, optional `where`), `KeywordIndex` (BM25 built from stored chunks, cached and rebuilt when the collection size changes, thread-safe), and `fuse()` — Reciprocal Rank Fusion. |
-| [`rag/hierarchical.py`](src/port6/services/rag/hierarchical.py) | 325 | Progressive narrowing. `select_documents()` ranks documents from Postgres without touching the chunk index; `select_sections()` searches only inside them; `retrieve_in_sections()` retrieves only inside the chosen sections. |
-| [`rag/generation.py`](src/port6/services/rag/generation.py) | 291 | Shared by all modes. Builds numbered sources with document/section/page headers, prompts for `[n]` citations, resolves them back to chunks, drops hallucinated numbers, handles the `NOT_FOUND` sentinel, and retries citation-only answers once. |
-| [`rag/validation.py`](src/port6/services/rag/validation.py) | 187 | Evidence validation in three bands: reject below `validation.min_overlap`, accept above `validation.skip_model_above` without a model call, and ask the model only in between. Falls back to the lexical signal if the validator itself fails. |
-| [`rag/naive.py`](src/port6/services/rag/naive.py) | 82 | **Mode 1.** Vector search → top-k → LLM. Unchanged baseline, kept deliberately limited. |
-| [`rag/hybrid.py`](src/port6/services/rag/hybrid.py) | 183 | **Mode 2.** Runs hierarchical and flat hybrid retrieval, fuses everything with RRF, and reranks so chunks two retrievers agreed on come first. |
-| [`rag/tools.py`](src/port6/services/rag/tools.py) | 228 | The agent's five tools, each an independently testable async callable returning `{"chunks", "info"}`, plus a registry with descriptions the planner reasons over. `document_lookup` returns the catalogue — filenames with clipped summaries — **as a chunk**, since only chunks reach the answer generator. |
-| [`rag/agent.py`](src/port6/services/rag/agent.py) | 540 | **Mode 3.** The LangGraph state machine: `retrieval_planner → tool_execution → evidence_validation → context_builder → answer_generation`, with a retry edge back to the planner. Model-driven planning with a rule-based fallback; retries always widen by rule. |
+| [`files/filehash.py`](src/port6/services/files/filehash.py) | 28 | `calculate_sha256` (bytes) and `calculate_content_sha256` (extracted text). The second catches the same document uploaded as PDF and as DOCX. |
+| [`parsers/parser.py`](src/port6/services/parsers/parser.py) | 399 | PDF / DOCX / TXT / MD → text **and** blocks, each carrying `page_number` and `heading_level`. Headings come from DOCX styles and Markdown levels where available, and from a shape heuristic otherwise. |
+| [`structure/service.py`](src/port6/services/structure/service.py) | 152 | Walks blocks with a heading stack to build the document → section → subsection tree. Keeps heading-only sections so a child's `parent_section_id` never dangles. |
+| [`chunking/service.py`](src/port6/services/chunking/service.py) | 197 | Splits **within each section**, so a chunk never straddles two unrelated parts of a policy, and maps offsets back to page numbers. |
+| [`ingestion/service.py`](src/port6/services/ingestion/service.py) | 511 | `process_document()` — PROCESSING → chunks → embed → summarise → READY, FAILED on error with the reason recorded. Long documents are summarised map-reduce over windows so the tail is represented. Synchronous on purpose, so FastAPI runs it in a worker thread. |
 
 ---
 
@@ -101,14 +99,27 @@ The Streamlit app below is retained as an internal debugging surface.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`embeddings/service.py`](src/port6/services/embeddings/service.py) | 27 | Returns `OpenAIEmbeddings` or `OllamaEmbeddings` based on `EMBEDDINGS_PROVIDER`. Imports are inside the branch so the unused provider is never required. |
-| [`llm/service.py`](src/port6/services/llm/service.py) | 30 | Same pattern for the chat model: `ChatOpenAI` or `ChatOllama`. |
-| [`llm/client.py`](src/port6/services/llm/client.py) | 7 | **Dead code — recommend deleting.** Creates a bare `AsyncOpenAI` client. Nothing imports it, and it raises `OpenAIError` on import when running Ollama-only, because `OPENAI_API_KEY` is legitimately unset. |
-| [`vector/chroma.py`](src/port6/services/vector/chroma.py) | 107 | Chroma wrapper. `get_vector_store()` returns one shared client built under a lock — ingestion threads used to race constructing it. `store_chunks()` writes via `add_documents` so the configured embedder is used; `delete_document_chunks()`, `search_documents()`, `get_collection_count()`. |
+| [`embeddings/service.py`](src/port6/services/embeddings/service.py) | 27 | `OpenAIEmbeddings` or `OllamaEmbeddings`. Imports live inside the branch so the unused provider is never required. |
+| [`llm/service.py`](src/port6/services/llm/service.py) | 30 | The same pattern for the chat model. |
+| [`llm/errors.py`](src/port6/services/llm/errors.py) | 220 | Classifies a failure as auth / quota / rate limit / unreachable / missing model / timeout / server, by exception name and message rather than by importing provider SDKs. Turns "processing failed" into "your API key expired", and says whether retrying will help. |
+| [`vector/chroma.py`](src/port6/services/vector/chroma.py) | 165 | Chroma wrapper. One shared client built under a lock — ingestion threads used to race constructing it. `count_chunks_by_document()` tallies the whole index in one pass for the document list. |
+| [`web/search.py`](src/port6/services/web/search.py) | 131 | Keyless DuckDuckGo search. A web chunk carries a `url` and uses `"web"` as its document id, so it can never be mistaken for a row in the documents table. Returns `[]` on failure rather than raising. |
+| [`tracing/service.py`](src/port6/services/tracing/service.py) | 100 | Phoenix spans for every model call. Emits only — the UI runs separately. Off unless `PHOENIX_ENABLED=true`, and every failure inside it is swallowed. |
 | [`db/database.py`](src/port6/services/db/database.py) | 40 | SQLAlchemy `engine`, `SessionLocal`, `Base`, and the `db_dependency` FastAPI injects. |
-| [`model/models.py`](src/port6/services/model/models.py) | 76 | The `Document` ORM model: identity, hashes, storage path, content, processing status, summary. A file is identified by its filename — nothing classifies it further. |
-| [`documents/service.py`](src/port6/services/documents/service.py) | 95 | List / get / content / summary / delete. Delete removes the chunks, the file and the row. |
-| [`retrieval/service.py`](src/port6/services/retrieval/service.py) | 38 | Plain semantic search behind `/search`. No LLM, used to inspect what the answerer is being given. |
+| [`model/models.py`](src/port6/services/model/models.py) | 385 | `Document`, `Setting`, `Prompt`, `Chat`, `QueryRun`. |
+| [`documents/service.py`](src/port6/services/documents/service.py) | 239 | List / get / content / summary / structure / reprocess / delete. The list attaches a chunk count from one bulk tally. |
+| [`retrieval/service.py`](src/port6/services/retrieval/service.py) | 79 | Raw retrieval behind `/search`. No LLM — used to see what the answerer is being given. |
+
+---
+
+## Settings, prompts and history
+
+| File | Lines | What it does |
+|---|---:|---|
+| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 573 | The shipped value for all 25 settings and 8 prompts. Each prompt is a single `template`, not a system/human pair. |
+| [`settings/service.py`](src/port6/services/settings/service.py) | 477 | Reads and writes them, cached in process and invalidated on write. Seeding advances a row that still matches its shipped default and never touches an edited one. `_check_variables` rejects an edit that drops a placeholder the pipeline supplies — that failure would otherwise surface as a confidently wrong answer. |
+| [`history/service.py`](src/port6/services/history/service.py) | 236 | Records each answered question with its result and the pipeline that produced it, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
+| [`history/chats.py`](src/port6/services/history/chats.py) | 280 | Conversations. Starts or finds the chat a question belongs to, loads the turns a follow-up is resolved against, and rebuilds the previous turn's chunks from its stored result. |
 
 ---
 
@@ -116,9 +127,11 @@ The Streamlit app below is retained as an internal debugging surface.
 
 | File | Lines | Contents |
 |---|---:|---|
-| [`schemas/document.py`](src/port6/services/schemas/document.py) | 47 | `DocumentResponse`, `DocumentContentResponse`, `DocumentSummaryResponse` |
-| [`schemas/query.py`](src/port6/services/schemas/query.py) | 47 | `AskRequest` (question, top_k, **mode**), `CompareRequest`, `CompareResponse` |
-| [`schemas/search.py`](src/port6/services/schemas/search.py) | 26 | `SearchRequest`, `SearchResult`, `SearchResponse` |
+| [`schemas/document.py`](src/port6/services/schemas/document.py) | 93 | `DocumentResponse` (with `chunk_count`), content, summary and structure responses |
+| [`schemas/query.py`](src/port6/services/schemas/query.py) | 103 | `AskRequest` (question, **pipeline**, mode, top_k, document_ids, chat_id), `CompareRequest` (modes **or** pipelines), `CompareResponse` |
+| [`schemas/admin.py`](src/port6/services/schemas/admin.py) | 126 | `PipelineResponse`, `SettingResponse`, `PromptResponse`, `QueryRunDetail`, `ChatSummary`, `ChatDetail` |
+| [`schemas/search.py`](src/port6/services/schemas/search.py) | 64 | `SearchRequest`, `SearchResult`, `SearchResponse` |
+| [`schemas/common.py`](src/port6/services/schemas/common.py) | 34 | `UtcDatetime` — serialises naive UTC with a zone, so a browser does not read it as local time |
 
 ---
 
@@ -126,21 +139,41 @@ The Streamlit app below is retained as an internal debugging surface.
 
 | File | What it holds |
 |---|---|
-| `config.yaml` | `app`, `upload` (limits, allowed types), `database`, `parser`, `chunking` (size/overlap), `embeddings`, `llm`, `retrieval` (`max_distance`), `summary`, `vector` |
-| `.env` | `DATABASE_URL`, `LLM_PROVIDER`, `EMBEDDINGS_PROVIDER`, `OPENAI_API_KEY`, `OLLAMA_*`, `LLM_TEMPERATURE` |
+| `config.yaml` | `app`, `upload`, `database`, `parser`, `chunking`, `embeddings`, `llm`, `retrieval`, `summary`, `vector` |
+| `.env` | `DATABASE_URL`, `LLM_PROVIDER`, `EMBEDDINGS_PROVIDER`, `OPENAI_API_KEY`, `OLLAMA_*`, `PHOENIX_*` |
 | `.env.example` | Template with every supported variable |
 
 | Migration | Adds |
 |---|---|
-| `189782ecc74c` | `documents` table |
-| `fdec5876f889` | `content` |
-| `25c5298b624a` | `status` |
-| `3ceb3fc9e653` | `error_message` |
-| `1ea38146104c` | `summary` |
-| `4535ca6eb9fe` | `document_title`, `document_type`, `document_key`, `version`, `effective_from`, `effective_to`, `lifecycle_status`, `department` + indexes |
-| `cf61a0ac779f` | **drops** `document_key`, `version`, `effective_from`, `effective_to`, `lifecycle_status` (versioning removed) |
-| `a7c4e1b93d02` | **drops** `document_title`, `document_type`, `department` (a file is identified by its filename) |
-| `b8e2f4a10c37` | `settings`, `prompts`, `query_runs` tables; `documents.attempts`, `last_attempt_at`, `failure_kind` |
+| `189782ecc74c` … `1ea38146104c` | `documents`, then `content`, `status`, `error_message`, `summary` |
+| `4535ca6eb9fe` | enterprise metadata columns |
+| `cf61a0ac779f` | **drops** the versioning columns |
+| `a7c4e1b93d02` | **drops** the descriptive metadata — a file is identified by its filename |
+| `b8e2f4a10c37` | `settings`, `prompts`, `query_runs`; ingestion attempt columns |
+| `c93a5f27e410` | `chats`, and the conversation columns on `query_runs` |
+| `e1d7b40c5a92` | collapses the prompt system/human pair into one `template` |
+| `f2a91c6d80b4` | `query_runs.pipeline` — which strategy answered |
+
+---
+
+## Tests
+
+| File | Covers |
+|---|---|
+| `tests/test_pipelines.py` | The registry, mode compatibility, resolution, ranking |
+| `tests/test_retrieval.py` | Fusion, scoping, topic-to-question rewriting |
+| `tests/test_aggregation.py` | Detection, coverage, the grouped context |
+| `tests/test_conversation.py` | Follow-up resolution and topic switches |
+| `tests/test_conflict.py` | Disagreeing documents and recency |
+| `tests/test_calculator.py` | The AST sandbox, the gate, provenance |
+| `tests/test_smalltalk.py` | What must and must not short-circuit |
+| `tests/test_tools_and_web.py` | Tool availability and the web boundary |
+| `tests/test_chunking.py`, `test_structure.py` | Ingestion |
+| `tests/test_errors_and_prompts.py` | Provider classification, the placeholder guard |
+| `tests/test_schemas.py`, `test_chat_cleanup.py` | Serialisation, cascade deletes |
+
+272 tests. The frontend has its own 17 — see
+[frontend/CODEBASE.md](frontend/CODEBASE.md).
 
 ---
 
@@ -148,15 +181,16 @@ The Streamlit app below is retained as an internal debugging surface.
 
 | Goal | File |
 |---|---|
-| Add a retrieval mode | `rag/` + register in `rag/system.py` `RUNNERS` |
-| Add an agent tool | `rag/tools.py` `TOOLS` registry |
+| Add a retriever | `rag/pipelines.py` `RETRIEVERS` + a branch in `_retrieve()` |
+| Add a preset | `rag/pipelines.py` `PRESETS` — a shortcut, not a new concept |
+| Add an agent tool | `rag/tools.py`, decorate with `@tool` |
 | Change the graph | `rag/agent.py` `build_graph()` |
-| Change the answer prompt | `rag/generation.py` `ANSWER_PROMPT` |
 | Change fusion | `rag/retrievers.py` `fuse()` |
-| Support a new file type | `parsers/parser.py` `parsers` dict + `config.yaml` `allowed_types` |
-| Change chunk size | `config.yaml` `chunking` |
-| Add a document field | `model/models.py` + a migration + `schemas/document.py` |
+| Change what a new chat defaults to | `PUT /settings/defaults.mode`, or the header dialog |
 | Change a prompt | `PUT /prompts/{name}` — or `settings/defaults.py` for a new shipped default |
 | Change a tuning value | `PUT /settings/{key}` — or `settings/defaults.py` to add one |
+| Support a new file type | `parsers/parser.py` + `config.yaml` `allowed_types` |
+| Change chunk size | `config.yaml` `chunking` |
+| Add a document field | `model/models.py` + a migration + `schemas/document.py` |
 | Change which model runs | `.env` only |
-| Swap model provider | `.env` `LLM_PROVIDER` / `EMBEDDINGS_PROVIDER` |
+| Turn on tracing | `.env` `PHOENIX_ENABLED=true` |

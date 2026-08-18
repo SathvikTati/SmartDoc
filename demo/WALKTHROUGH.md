@@ -538,6 +538,41 @@ This page is the debugging surface. When an answer is wrong, the question
 is always "was the right chunk retrieved?" — and this answers it without
 the generation step in the way.
 
+### Pipelines — the retrieval strategies against each other
+
+**Go to** `/pipelines`. Select **Semantic** and **Keyword** under naive,
+then run:
+
+```
+What does SEC-1177 cover?
+```
+
+> Semantic — *no answer*. Keyword — *Control SEC-1177 requires that
+> privileged actions are logged to a store the privileged user cannot
+> modify.*
+
+Now the other way round:
+
+```
+Can I work from another country for a while?
+```
+
+> Keyword — *no answer*. Semantic — *up to 10 consecutive working days
+> with prior approval.*
+
+That is the entire argument for hybrid retrieval, demonstrated rather
+than asserted: a code has no useful semantic neighbourhood, and a
+paraphrase shares almost no vocabulary with the document. Add
+**Semantic + Keyword** and it answers both.
+
+Under agentic, run **Planned** against **Direct** on the same question —
+same answer, roughly 2.9 s against 1.3 s. Direct skips the planning call
+and the retry, so the page tells you what planning costs on this corpus.
+
+The metrics table reports answered, citations, chunks, documents and
+latency. Nothing scores answer quality: that would need a judge model and
+would be the least trustworthy number on the page.
+
 ### Compare — the three modes on one question
 
 **Go to** `/compare`:
