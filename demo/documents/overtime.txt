@@ -1,0 +1,2 @@
+Overtime
+Overtime is the amount of time an employee works beyond normal working hours. Overtime hours have to be approved by your respective Managers with complete justifications at least one hour before overtime is required. Overtime hours will be tracked through the Time & Attendance module. The basic calculation is Overtime pay = Hourly pay rate x 1.5 x overtime hours worked. Compensatory off will be given to employees for having worked on a designated weekend or a public holiday.
