@@ -205,3 +205,65 @@ def test_a_scope_composes_with_an_existing_filter():
 def test_combining_nothing_is_nothing():
     assert combine_where(None, None) is None
     assert combine_where({"a": 1}, None) == {"a": 1}
+
+
+# --- a topic typed instead of a question ------------------------------
+
+from port6.services.rag.generation import (  # noqa: E402
+    MAX_TOPIC_WORDS,
+    as_question,
+)
+
+
+class TestAsQuestion:
+    """"leave policy" retrieved the right chunks and was still refused.
+
+    The answer prompt declines when the sources do not contain "the
+    answer", and a bare topic names no answer to look for.
+    """
+
+    def test_a_bare_topic_becomes_a_question(self):
+        assert as_question("leave policy") == (
+            "What do the documents say about leave policy?"
+        )
+        assert as_question("expense limits") == (
+            "What do the documents say about expense limits?"
+        )
+
+    def test_a_real_question_is_untouched(self):
+        for question in [
+            "How much annual leave do employees get?",
+            "What is control SEC-4412?",
+            "Which documents mention probation?",
+        ]:
+            assert as_question(question) == question
+
+    def test_a_question_without_a_mark_is_still_a_question(self):
+        assert as_question("what is the notice period") == (
+            "what is the notice period"
+        )
+
+    def test_an_instruction_is_left_alone(self):
+        for instruction in [
+            "list the travel rules",
+            "explain probation",
+            "compare the leave policies",
+        ]:
+            assert as_question(instruction) == instruction
+
+    def test_a_long_phrase_is_a_sentence_not_a_topic(self):
+        sentence = " ".join(["word"] * (MAX_TOPIC_WORDS + 1))
+
+        assert as_question(sentence) == sentence
+
+    def test_a_statement_carrying_a_question_is_untouched(self):
+        statement = (
+            "I have taken 8 days of leave. How many leave days do I have "
+            "remaining"
+        )
+
+        assert as_question(statement) == statement
+
+    def test_empty_input_is_returned_unchanged(self):
+        assert as_question("") == ""
+        assert as_question("   ") == ""
