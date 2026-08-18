@@ -67,8 +67,16 @@ export const Textarea = forwardRef(function Textarea(
   )
 })
 
+/**
+ * Takes either a flat `options` list or children.
+ *
+ * `options` covers the common case in one prop. Children exist because a
+ * flat list cannot express `<optgroup>`, and the pipeline selectors group
+ * by family — passing children used to render an empty select and then
+ * crash on `options.map`.
+ */
 export const Select = forwardRef(function Select(
-  { options, className, ...props },
+  { options, className, children, ...props },
   ref,
 ) {
   return (
@@ -78,11 +86,13 @@ export const Select = forwardRef(function Select(
         className={cn(CONTROL, 'h-8 appearance-none pl-2.5 pr-7', className)}
         {...props}
       >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
+        {options
+          ? options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))
+          : children}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-ink-subtle" />
     </div>
