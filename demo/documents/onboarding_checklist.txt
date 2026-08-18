@@ -1,0 +1,152 @@
+ACME CORP NEW STARTER ONBOARDING CHECKLIST
+
+Reference: HR-ONB-2026
+For: line managers and new starters
+Maintained by: People Operations
+
+Work through this checklist in order. Items marked MANDATORY block system
+access until they are complete. Everything else can follow in the first
+fortnight.
+
+BEFORE THE FIRST DAY
+
+Manager confirms the start date with People Operations at least 10
+working days ahead. A later confirmation risks the laptop not arriving in
+time.
+
+Manager raises the equipment request in the IT portal, choosing the
+laptop specification appropriate to the role. Standard build for most
+roles, developer build where the role writes code, and the high-memory
+build for design and data work.
+
+Manager nominates a buddy. The buddy is not the line manager and is
+usually someone who joined within the last year.
+
+Manager drafts a 30-60-90 day plan. This does not need to be detailed but
+it should say what good looks like at each point.
+
+People Operations sends the contract and the new starter pack. The pack
+includes the HR Policy, the Information Security Policy, the IT
+Acceptable Use Policy and the Expense Policy.
+
+New starter returns the signed contract. MANDATORY.
+
+New starter supplies right to work documentation. MANDATORY. Originals
+must be seen, in person or over video with the original held to camera.
+
+New starter supplies bank details and tax information through the People
+Portal. MANDATORY for the first payroll run; a late submission means
+payment in the following month.
+
+DAY ONE
+
+Collect the laptop and access badge from reception, or unbox the laptop
+delivered to home.
+
+Complete first login and enrol in multi-factor authentication. MANDATORY.
+Access to every other system depends on this.
+
+Install the password manager and move any temporary credentials into it.
+MANDATORY.
+
+Read and accept the IT Acceptable Use Policy in the compliance portal.
+MANDATORY.
+
+Read and accept the Information Security Policy in the compliance portal.
+MANDATORY.
+
+Meet the line manager for a first one-to-one. Cover the 30-60-90 plan,
+the working pattern, and how the team communicates.
+
+Meet the buddy. No agenda required.
+
+Photograph for the internal directory, if the new starter is happy to
+have one.
+
+FIRST WEEK
+
+Security awareness training. MANDATORY within 5 working days. The module
+takes about 40 minutes and ends with a short assessment.
+
+Data protection training. MANDATORY within 5 working days.
+
+Set up the development environment, for engineering roles. The setup
+guide is in the engineering handbook.
+
+Attend the company introduction session, held every Tuesday morning.
+
+Book a first meeting with each of the immediate team.
+
+Confirm the working pattern with the line manager and record it in the
+People Portal, including any remote days.
+
+Read the Travel Booking Policy and the Expense Policy if the role
+involves travel.
+
+FIRST MONTH
+
+Complete the code of conduct module. MANDATORY within 30 days.
+
+Complete the anti-bribery module. MANDATORY within 30 days for anyone in
+a client-facing or purchasing role.
+
+Enrol in the pension scheme. Automatic enrolment happens after 3 months
+of service, but a new starter may opt in earlier.
+
+Attend a session with People Operations covering leave booking,
+performance reviews and the benefits package.
+
+First deliverable, as set out in the 30-60-90 plan.
+
+PROBATION
+
+New starters serve a probation period of 3 months. The terms are set out
+in the HR Policy and are not repeated here.
+
+A probation review meeting is held at the six-week point. The manager
+books this at the start of employment so that it is in the calendar and
+does not slip.
+
+The final probation review is held in the last week of the third month.
+The outcome is recorded in the People Portal within five working days.
+
+Note that employees on probation are not eligible for the discretionary
+bonus scheme or for unpaid leave, and that international travel during
+probation needs additional approval. Managers should flag this early
+where a role involves travel.
+
+MANAGER CHECKLIST SUMMARY
+
+Ten working days before: confirm start date, raise equipment request,
+nominate buddy, draft the 30-60-90 plan.
+
+Day one: one-to-one, introduce the buddy, confirm access is working.
+
+Week one: check the mandatory training is booked, confirm the working
+pattern is recorded.
+
+Week six: hold the first probation review.
+
+Month three: hold the final probation review and record the outcome.
+
+COMMON PROBLEMS
+
+Laptop not arriving in time. Usually caused by a late start date
+confirmation. Escalate to the IT service desk with the request number.
+
+Payroll missed. Usually caused by bank details or tax information not
+being submitted before payroll closes on the 20th.
+
+Access to a system missing. Access is role-based; ask the manager to
+check that the correct role was requested rather than raising a ticket
+for each system individually.
+
+Training overdue. Reminders are automatic at 3, 5 and 10 days. After
+that the compliance report goes to the department director.
+
+CONTACTS
+
+People Operations: people@acme.example
+IT service desk: itsupport@acme.example, extension 4400
+Payroll: payroll@acme.example
+Compliance portal: through the intranet home page

@@ -1,2 +1,138 @@
-Overtime
-Overtime is the amount of time an employee works beyond normal working hours. Overtime hours have to be approved by your respective Managers with complete justifications at least one hour before overtime is required. Overtime hours will be tracked through the Time & Attendance module. The basic calculation is Overtime pay = Hourly pay rate x 1.5 x overtime hours worked. Compensatory off will be given to employees for having worked on a designated weekend or a public holiday.
+ACME CORP PAYROLL AND OVERTIME GUIDE
+
+Document Reference: PAY-2026-OT
+Department: Finance, Payroll
+Effective Date: 1 January 2026
+
+This guide explains how pay is calculated for hours worked beyond the
+standard working week, for weekend and public holiday work, and for shift
+patterns. It applies to all employees whose contract states an hourly
+rate or an annual salary with an entitlement to overtime.
+
+1. WHAT COUNTS AS OVERTIME
+
+Overtime is the amount of time an employee works beyond normal working
+hours. The standard working week is 37.5 hours. Any hour worked beyond
+37.5 in a single week is overtime.
+
+Overtime hours have to be approved by your respective Managers with
+complete justifications at least one hour before overtime is required.
+Overtime worked without prior approval is not paid, though a manager may
+approve it retrospectively where the circumstances made prior approval
+impossible.
+
+Overtime hours will be tracked through the Time and Attendance module.
+Hours not recorded in the module by the end of the pay period are not
+paid.
+
+2. THE BASIC CALCULATION
+
+The basic calculation is Overtime pay = Hourly pay rate x 1.5 x overtime
+hours worked.
+
+For a salaried employee the hourly pay rate is derived from the annual
+salary. The formula is annual salary divided by 1950. The figure 1950 is
+37.5 hours multiplied by 52 weeks.
+
+Worked example. An employee on an annual salary of 39000 has an hourly
+rate of 39000 / 1950, which is 20. If that employee works 6 approved
+overtime hours in a week, the overtime pay is 20 x 1.5 x 6.
+
+3. ENHANCED RATES
+
+Not all overtime is paid at the same multiplier.
+
+Weekday overtime, worked Monday to Friday, is paid at 1.5 times the
+hourly rate.
+
+Saturday overtime is paid at 1.5 times the hourly rate for the first four
+hours and 2 times the hourly rate thereafter.
+
+Sunday overtime is paid at 2 times the hourly rate for all hours.
+
+Public holiday overtime is paid at 2.5 times the hourly rate. There are
+8 public holidays in the standard calendar.
+
+Night work, defined as hours worked between 23:00 and 06:00, attracts an
+additional night allowance of 4.20 per hour on top of the applicable
+overtime multiplier.
+
+4. COMPENSATORY TIME OFF
+
+Compensatory off will be given to employees for having worked on a
+designated weekend or a public holiday. Compensatory time is granted at
+the same multiplier as the pay would have been. An employee who works
+4 hours on a Sunday may take 8 hours of compensatory leave instead of
+being paid.
+
+Compensatory time must be taken within 90 days of being earned. Time not
+taken within that window is paid at the applicable overtime rate in the
+next payroll run.
+
+An employee may choose pay or compensatory time but not a mixture of the
+two for the same period of work.
+
+5. CAPS AND WORKING TIME LIMITS
+
+No employee may work more than 48 hours a week averaged over a 17 week
+reference period, unless they have signed an individual opt-out.
+
+The maximum overtime payable in a single month is 40 hours. Hours beyond
+that are converted to compensatory time.
+
+An employee must have at least 11 consecutive hours of rest between
+shifts, and at least one full day off in every seven.
+
+6. SHIFT ALLOWANCES
+
+Employees working a rotating shift pattern receive a shift allowance
+calculated as a percentage of basic salary.
+
+Two-shift pattern, covering 06:00 to 22:00, attracts 12 per cent.
+
+Three-shift pattern, covering the full 24 hours, attracts 20 per cent.
+
+On-call standby, where the employee is not working but must be reachable
+and able to attend within one hour, is paid at 95 per hour of standby.
+A call-out during standby is paid at the applicable overtime rate with a
+minimum of 3 hours.
+
+7. PART-TIME EMPLOYEES
+
+A part-time employee works overtime only once they exceed 37.5 hours in a
+week, not once they exceed their contracted hours. Hours worked between
+their contracted hours and 37.5 are paid at the basic hourly rate.
+
+8. SALARY BANDS
+
+The current bands, in thousands, are as follows. Band 1 runs from 28 to
+36. Band 2 runs from 34 to 46. Band 3 runs from 44 to 62. Band 4 runs
+from 58 to 82. Band 5 runs from 78 to 110.
+
+Bands overlap deliberately. Position within a band reflects experience
+and sustained performance rather than time served.
+
+9. DEDUCTIONS AND STATUTORY PAYMENTS
+
+Payroll deducts income tax, national insurance, pension contributions and
+any salary sacrifice arrangements before net pay is calculated.
+
+Statutory sick pay begins on the fourth consecutive day of absence, once
+company sick pay under the HR Policy is exhausted.
+
+Student loan repayments are deducted at the plan rate notified by HMRC.
+
+10. PAYROLL CALENDAR
+
+Payroll closes on the 20th of each month. Payment is made on the last
+working day of the month. Overtime worked after the 20th is paid in the
+following month.
+
+Payslips are published in the People Portal on the day of payment and are
+retained there for 7 years.
+
+11. QUERIES
+
+Payroll queries should be raised with payroll@acme.example within 30 days
+of the payslip date, quoting PAY-2026-OT. Errors identified after 90 days
+may be corrected but will not attract interest or compensation.

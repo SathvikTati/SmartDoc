@@ -8,7 +8,7 @@ corpus actually returns**, so you know immediately whether a step went
 wrong. Every output below was captured from a real run against
 `demo/documents/` — not written from memory.
 
-Reading time ~5 min. Demo time ~20 min at a talking pace.
+Reading time ~7 min. Demo time ~25 min at a talking pace.
 
 Just want the inputs without the narration? See [INPUTS.md](INPUTS.md).
 
@@ -27,28 +27,32 @@ cd frontend && npm run dev        # http://localhost:5173
 ollama list                       # qwen2.5-coder:7b, nomic-embed-text
 ```
 
-**Start from a clean library.** The answers below assume the seven files in
-`demo/documents/` and nothing else. An extra leave policy in the library
-will change the maternity and sick-leave numbers, because the question
-becomes genuinely ambiguous and the model picks one.
+**Start from a clean library.** The answers below assume the ten files in
+`demo/documents/` and nothing else. `demo/documents/updates/` is held
+back on purpose — it is uploaded during Act 7.
 
 ```bash
 uv run python demo/run_demo.py --reset    # removes the demo documents
 ```
 
-The corpus is deliberately small and deliberately overlapping — three
-files mention probation, two mention leave. That overlap is what makes
-aggregation and scoping worth showing.
+About 108 KB across ten documents, indexing to roughly 200 chunks, and
+deliberately overlapping: five documents mention probation, three mention
+data retention, and the held-back revision disagrees with the HR policy
+on three figures. The overlap is what makes aggregation, scoping and
+conflict detection worth showing.
 
 | File | Format | Why it is in the corpus |
 |---|---|---|
-| `hr_policy.md` | Markdown | Clean headings — the section tree demo |
-| `expense_policy.md` | Markdown | Numbers and a reference code |
-| `travel_policy.md` | Markdown | Overlaps HR on probation |
-| `security_policy.docx` | DOCX | A rare code (`SEC-4412`) only BM25 finds |
-| `employee_handbook.pdf` | PDF | Page-numbered citations |
-| `meeting_notes.txt` | Plain text | No structure at all — the fallback path |
-| `overtime.txt` | Plain text | A formula, for the calculator caveat |
+| `hr_policy.md` | Markdown, 11 KB | The anchor — three heading levels, most of the figures |
+| `expense_policy.md` | Markdown, 8.6 KB | Caps, rates, an approval table, `FIN-2026-EXP` |
+| `it_acceptable_use.md` | Markdown, 7.2 KB | Devices, BYOD, AI tool rules |
+| `travel_policy.md` | Markdown, 6.7 KB | Overlaps HR on probation |
+| `data_retention_schedule.md` | Markdown, 6.2 KB | Retention tables; overlaps security |
+| `security_policy.docx` | DOCX, 40 KB | Real Word heading styles; `SEC-4412`, `SEC-8830` |
+| `employee_handbook.pdf` | PDF, 8 pages | Page-numbered citations |
+| `overtime.txt` | Plain text, 5.1 KB | Pay formulas the calculator reads out of the document |
+| `onboarding_checklist.txt` | Plain text, 5.2 KB | No heading syntax — the structure fallback |
+| `meeting_notes.txt` | Plain text, 4.7 KB | Deliberately vague; competes and loses |
 
 ---
 
@@ -56,13 +60,14 @@ aggregation and scoping worth showing.
 
 **Go to** `/files`.
 
-1. **Drag all seven files** from `demo/documents/` onto the window. The
+1. **Drag all ten files** from `demo/documents/` onto the window. The
    upload dialog accepts the drop and each file gets its own row.
 
 2. **Watch the status column.** Rows go `PENDING → PROCESSING → READY`.
    Ingestion runs in a background thread, so the UI stays responsive —
-   click around while it works. On a warm Ollama the seven files take
-   roughly a minute.
+   click around while it works. On a warm Ollama the ten files take a
+   few minutes — this corpus is large enough that ingestion is worth
+   watching rather than skipping.
 
    Worth saying out loud: extraction, chunking, embedding and
    summarisation all happen here, once. Nothing is re-read at query time.
@@ -142,8 +147,9 @@ What is the grievance procedure?
 > People Operations, who must acknowledge it within 5 working days and
 > hold a hearing within 15 working days [1].
 
-The citation carries a page number, because chunk offsets are mapped back
-to the PDF page they came from during ingestion.
+The citation reads **page 6**, and page 6 of the handbook is the
+grievance section — open the document and check. Chunk offsets are mapped
+back to the PDF page they came from during ingestion.
 
 ### 2d. It declines rather than inventing
 
@@ -161,7 +167,56 @@ in a document-QA demo; don't skip it.
 
 ---
 
-## Act 3 — Scoping to the documents you chose
+## Act 3 — What people actually type
+
+Before the polished questions, show the messy ones. This is where most
+document-QA demos quietly fall over.
+
+**A topic, not a question:**
+
+```
+leave policy
+```
+```
+expense limits
+```
+
+Both answer. A bare topic names no answer to look for, so the generator
+used to read five perfectly good chunks and reply "I could not find an
+answer" — the phrase is rewritten into a question before generation,
+while retrieval still uses the words as typed.
+
+**A greeting:**
+
+```
+hello
+```
+
+> Hello. I answer questions about the documents you have uploaded, and
+> cite the passage each statement comes from…
+
+Answered in 0 ms with no evidence panels, because nothing was retrieved.
+`thanks`, `bye` and `what can you do?` behave the same way.
+
+**And the thing that must not break:**
+
+```
+hi, how much annual leave do we get?
+```
+
+Retrieves normally. Only a message that is *nothing but* a pleasantry
+short-circuits — a real question quietly answered with "how can I help?"
+would be far worse than a greeting getting retrieved for.
+
+**Too long:**
+
+Paste more than 1000 characters. The counter turns red and submit is
+blocked before the request is sent, rather than the server returning
+"String should have at most 1000 characters".
+
+---
+
+## Act 4 — Scoping to the documents you chose
 
 Same question, different scope, different answer. This is the clearest
 30 seconds in the demo.
@@ -198,7 +253,7 @@ influence the answer even indirectly.
 
 ---
 
-## Act 4 — Cross-document aggregation
+## Act 5 — Cross-document aggregation
 
 Normal retrieval optimises for *depth* — the k best chunks anywhere. Some
 questions need *coverage* — the best chunks from every document that is
@@ -215,7 +270,7 @@ What does each document say about probation?
 > **hr_policy.md** — New employees serve a probation period of 3 months.
 > Probation may not be extended. [3]
 
-The header above the answer reads **aggregated over 3 documents**. The
+The header above the answer reads **aggregated over 5 documents**. The
 question is classified as an aggregation up front, retrieval switches to
 coverage mode, chunks are grouped by document, and a different answer
 prompt renders it per document rather than as one paragraph.
@@ -233,7 +288,7 @@ words may not trip it. Phrase it as an aggregation and it aggregates.
 
 ---
 
-## Act 5 — Follow-up questions
+## Act 6 — Follow-up questions
 
 Ask these **in order, in the same investigation**. Do not start a new one
 between them.
@@ -282,20 +337,24 @@ together, and it's what the History page groups on.
 
 ---
 
-## Act 6 — The calculator tool
+## Act 7 — Arithmetic
 
-Switch the mode selector to **Agentic**.
+Leave the mode selector on **Naive** for the first one. That is the
+point: this is not an agent feature.
 
 ```
-Annual leave is 22 days and I have taken 8. How many are left?
+I have taken 8 days of leave. How many leave days do I have remaining?
 ```
 
-> You have 14 days of annual leave remaining [2].
+> You have 14 days of leave remaining [6].
 
-The tools row reads `calculate · semantic_search`. Click the `[2]`
-citation — the source is **calculator**, and its content is the literal
-expression `22 - 8 = 14`. The arithmetic is a cited source like any
-other, so you can audit it.
+Click the `[6]`. The source is **calculator** and its content is the
+worked expression `22 - 8 = 14`. The 22 came from `hr_policy.md`; the
+8 came from the question; the subtraction came from neither.
+
+Run the same question in Hybrid and Agentic — same answer. The sum runs
+after retrieval in every mode, so a question needing arithmetic does not
+first need someone to pick the right mode.
 
 Second one, mixing retrieval and arithmetic:
 
@@ -303,14 +362,14 @@ Second one, mixing retrieval and arithmetic:
 What is 15% of the 250 USD hotel cap?
 ```
 
-> 15% of the 250 USD hotel cap is 37.5 USD [2].
+> 15% of the 250 USD hotel cap is 37.5 USD [6].
 
 The `250` came from `expense_policy.md`; the multiplication did not come
 from the model.
 
-**Why a tool at all.** A 7B model is unreliable at arithmetic and
-confidently wrong when it slips — the worst combination inside an answer
-that cites a policy. The tool evaluates the expression by parsing it to
+**Why not just let the model do it.** A 7B is unreliable at arithmetic
+and confidently wrong when it slips — the worst combination inside an
+answer that cites a policy. The expression is evaluated by parsing it to
 an AST and walking it against an allow-list of operators and functions.
 
 **It never calls `eval`.** The expression is written by a model, which
@@ -320,19 +379,89 @@ execution. If someone asks how it is sandboxed, this is the answer:
 are all rejected by the walker, and there is no path from an expression
 to attribute access, imports or arbitrary calls.
 
-**Known limitation — say it before someone finds it.** When the *formula*
-lives in the document rather than the numbers, the model extracts the
-expression badly. `overtime.txt` defines overtime pay as
-`hourly rate × 1.5 × hours`, and asking for overtime on a 20/hour rate
-for 6 hours produces `20 * 6 = 120` instead of `180` — the model drops
-the 1.5 when it writes the expression. The evaluator is correct; the
-extraction step is not. The fix is to run `calculate` after retrieval so
-the formula is in context when the expression is written. Don't demo the
-overtime question as a success.
+**Third one — the formula lives in the document, not the question:**
+
+```
+My hourly rate is 20 and I worked 6 overtime hours. What is my overtime pay?
+```
+
+> Overtime pay = Hourly pay rate x 1.5 x overtime hours worked.
+> 20 x 1.5 x 6 = 180 [6]
+
+The ×1.5 multiplier appears nowhere in the question — it is in
+`overtime.txt`. This works because the calculation runs **after**
+retrieval, with the sources in view. Asked before retrieval, the model
+had nothing to write the multiplier from and produced `20 * 6 = 120`.
+
+Two guards worth mentioning if anyone asks how it avoids laundering a
+guess. The expression step returns NONE when it cannot build the whole
+expression from the question and the sources — a missing operation
+counts, even when the numbers are all present. And an "expression" that
+is just a number is thrown away: that means the model did the sum itself
+and skipped the working, which is precisely what this exists to prevent.
+
+**Where it still declines.** "I carried over 10 days on top of my annual
+leave, what is my total?" returns no answer. Nothing states that carry-
+over adds to the entitlement, so refusing is the correct outcome rather
+than a bug — but do not put it in the demo expecting 32.
 
 ---
 
-## Act 7 — Web search
+## Act 8 — When two documents disagree
+
+A library accumulates versions. Someone uploads a revised policy and
+does not delete the old one, and now two documents answer the same
+question with different numbers.
+
+**Upload the held-back revision**, from `/files` or from a terminal:
+
+```bash
+curl -F "files=@demo/documents/updates/hr_policy_2027.md;type=text/markdown" \
+  localhost:8000/upload
+```
+
+Wait for it to reach READY, then ask the question you asked in Act 2a:
+
+```
+How much annual leave do employees get?
+```
+
+> 25 days of paid annual leave per calendar year [1][3]. Previously, they
+> received 22 days [5].
+
+A banner appears above the answer: **Your documents disagree** — with the
+figures, the filenames and the upload dates. Two more:
+
+```
+What is the notice period for resignation?
+```
+> 90 days, previously 60.
+
+```
+How many days of sick leave do employees get?
+```
+> 15 days, previously 12.
+
+**How it decides.** Detection is narrow on purpose: two chunks conflict
+only when they come from different documents and the words *after* the
+number match. "22 days paid annual leave" against "25 days paid annual
+leave" is a conflict; "12 days paid sick leave" is not. A missed conflict
+just leaves the old behaviour, while a false one rewrites a correct
+answer — so it errs toward missing.
+
+**Be clear that recency is a guess.** Nothing in a file says it
+supersedes another. The most recently uploaded document wins because
+that is the only signal available, which is exactly why the older figure
+is reported rather than silently dropped: a reader who knows the old
+document is the authoritative one can see it was set aside. It is also
+why the upload dialog asks you to delete the version you are replacing.
+
+**Delete `hr_policy_2027.md` before moving on**, or the rest of the demo
+answers 25 days where this script says 22.
+
+---
+
+## Act 9 — Web search
 
 Off by default. Turn it on for this act:
 
@@ -390,7 +519,7 @@ curl -X PUT http://localhost:8000/settings/web.enabled \
 
 ---
 
-## Act 8 — Search, Compare, History
+## Act 10 — Search, Compare, History
 
 ### Search — retrieval without the model
 
@@ -422,19 +551,20 @@ latency. Representative numbers from this corpus:
 
 | Mode | Latency | Documents cited |
 |---|---|---|
-| naive | ~1.5 s | 3 |
-| hybrid | ~1.5 s | 2 |
-| agentic | ~2.2 s | 2 |
+| naive | ~2.8 s | 3 |
+| hybrid | ~4.6 s | 5 |
+| agentic | ~5.5 s | 5 |
 
-**Read this honestly.** On a seven-file corpus the three modes mostly
-agree, and here naive actually cited one more document and read more
-fluently. That is the useful message, not a weakness: agentic costs extra
-latency and extra model calls, and this page is how you find out whether
-a corpus is big or messy enough to need it. A demo that claims agentic
-always wins gets picked apart in the first question.
+Naive ranks chunks and stops, so it sees three documents and never learns
+the other two exist. Hybrid detects the aggregation and covers five. That
+gap is real now — on the small corpus this demo used to ship with, all
+three modes agreed and naive often read best.
 
-The gap opens up where you'd expect — many documents, ambiguous
-questions, questions needing a tool. Try:
+Still worth saying plainly: agentic costs latency and extra model calls
+for the same five documents hybrid found. This page is how you decide
+whether a corpus needs it, not a claim that it always wins.
+
+Try one where they agree, so the comparison stays honest:
 
 ```
 What is control SEC-4412?
@@ -453,7 +583,7 @@ it — no orphaned rows in the sidebar.
 
 ---
 
-## Act 9 — Configuration, live
+## Act 11 — Configuration, live
 
 Prompts and settings live in Postgres, not in source. Every prompt is
 editable at runtime and the change takes effect on the next request — no
@@ -467,7 +597,8 @@ curl -s localhost:8000/settings | python3 -m json.tool | head -40
 Eight prompts are exposed: `answer_generation`, `aggregate_answer`,
 `retrieval_planner`, `follow_up_resolution`, `evidence_validation`,
 `calculation_expression`, `document_summary` and
-`document_summary_combine`.
+`document_summary_combine`. Each is a single `template` field — one box
+to edit, not a system/human pair to keep consistent.
 
 **Show the guard rail.** Every prompt declares the placeholders its
 pipeline supplies. Drop one and the write is rejected:
@@ -475,7 +606,7 @@ pipeline supplies. Drop one and the write is rejected:
 ```bash
 curl -X PUT localhost:8000/prompts/answer_generation \
   -H 'Content-Type: application/json' \
-  -d '{"system": "You are helpful.", "human": "Answer this: {query}"}'
+  -d '{"template": "You are helpful. Answer this: {query}"}'
 ```
 
 ```json
@@ -497,7 +628,7 @@ you have *not* edited, and never touches one you have.
 
 ---
 
-## Act 10 — What happens when things break
+## Act 12 — What happens when things break
 
 - **404** — go to `/nonsense`. A real page with a route back, not a blank
   screen.
@@ -526,8 +657,9 @@ say so plainly rather than being caught by it.
 **"Why a 7B model?"** It runs on a laptop with no per-token cost, which
 is the right default for a demo. The provider is pluggable — switch to
 OpenAI in settings and every pipeline uses it unchanged. The rough edges
-you saw (the overtime expression, the occasional stray citation) are
-7B-shaped and largely go away on a bigger model.
+you saw (the occasional stray citation, a declined question that a
+person would have answered) are 7B-shaped and largely go away on a
+bigger model.
 
 **"How do I know it isn't hallucinating?"** Three layers, and you showed
 all three: retrieval is filtered to your documents, every sentence cites

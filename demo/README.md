@@ -37,27 +37,44 @@ First run takes a few minutes: every document is chunked, embedded and summarise
 
 ## The corpus
 
-Seven documents in four formats, built so every feature has something to bite on.
+Ten documents in four formats, about 108 KB of text, indexing to roughly
+200 chunks. Deliberately overlapping: five documents mention probation,
+three mention data retention, and two give different figures for annual
+leave. That overlap is what makes aggregation, scoping and conflict
+detection worth showing.
 
-| File | Format | Contains |
-|---|---|---|
-| `hr_policy.md` | Markdown | Leave, probation, notice period — three-level heading tree |
-| `expense_policy.md` | Markdown | Meal and hotel caps, reference code `FIN-2026-EXP` |
-| `travel_policy.md` | Markdown | Booking rules; also mentions probation, so some questions cross documents |
-| `security_policy.docx` | **DOCX** | Real `Heading 1/2/3` styles; codes `SEC-4412`, `SEC-8830`, `ISO 27001` |
-| `employee_handbook.pdf` | **PDF, 3 pages** | Working hours, remote work, grievance procedure (page 3) |
-| `meeting_notes.txt` | Plain text | ALL-CAPS headings, no structure, deliberately vague |
-| `overtime.txt` | Plain text | An overtime pay formula — exercises the calculator's limits |
+| File | Format | Size | Why it is here |
+|---|---|---|---|
+| `hr_policy.md` | Markdown | 11 KB | The anchor. Three heading levels, most of the figures |
+| `expense_policy.md` | Markdown | 8.6 KB | Caps, rates, an approval table, `FIN-2026-EXP` |
+| `it_acceptable_use.md` | Markdown | 7.2 KB | Devices, BYOD, AI tool rules, `IT-AUP-204` |
+| `travel_policy.md` | Markdown | 6.7 KB | Booking and class rules; overlaps HR on probation |
+| `data_retention_schedule.md` | Markdown | 6.2 KB | Retention tables, `DR-SCH-2026` |
+| `security_policy.docx` | **DOCX** | 40 KB | Real Word heading styles; `SEC-4412`, `SEC-8830`, ISO 27001 |
+| `employee_handbook.pdf` | **PDF, 8 pages** | 13 KB | Page-numbered citations; grievance on page 6 |
+| `overtime.txt` | Plain text | 5.1 KB | Pay formulas the calculator has to read out of the document |
+| `onboarding_checklist.txt` | Plain text | 5.2 KB | No heading syntax at all — the structure fallback |
+| `meeting_notes.txt` | Plain text | 4.7 KB | Deliberately vague. Competes for retrieval slots and loses |
 
-### What each file is for
+`demo/documents/updates/hr_policy_2027.md` is **not** loaded by default.
+It restates annual leave as 25 days, notice as 90 days and sick leave as
+15 days, and exists to be uploaded during the demo so the conflict
+handling has something to resolve.
 
-- **`hr_policy.md`** — the main target. Three heading levels exercise document → section → subsection narrowing.
-- **DOCX** — structure comes from real Word heading styles rather than a shape heuristic. The codes are what BM25 shines on.
-- **PDF** — three pages, so citations carry page numbers. The grievance procedure is on page 3.
-- **`travel_policy.md`** — mentions probation, which also appears in the HR policy, so a probation question has to reach across documents.
-- **`meeting_notes.txt`** — ALL-CAPS headings and an "ANNUAL LEAVE" section that says nothing concrete. It tests that near-miss text competes realistically for retrieval slots, and that a document whose headings come from a shape heuristic still chunks sensibly.
+### Regenerating the binaries
 
----
+`security_policy.docx` and `employee_handbook.pdf` are committed so the
+demo needs no build step. To change their content, edit
+`demo/build_binaries.py` and run it:
+
+```bash
+uv run python demo/build_binaries.py
+```
+
+They are binaries rather than more Markdown because two features depend
+on the format: the DOCX carries real `Heading 1/2/3` styles, so structure
+comes from the document instead of a shape heuristic, and the PDF runs to
+eight pages, so a page citation can be checked against the file.
 
 ## Scenarios
 
