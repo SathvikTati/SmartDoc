@@ -406,7 +406,14 @@ class TestTheWebStaysOutOfUnrelatedQuestions:
         )
 
 
-def test_the_retry_plan_leads_with_the_web_once_it_is_pending():
+def test_the_retry_plan_leads_with_the_web_once_it_is_pending(monkeypatch):
+    # Switched on here rather than read from the database. Without this the
+    # test asks the running install whether web search happens to be
+    # enabled, and passes or fails on the answer — which is a property of
+    # the machine, not of the planner.
+    monkeypatch.setattr(web, "is_available", lambda: True)
+    monkeypatch.setattr(tool_registry, "get_setting", lambda key: True)
+
     from port6.services.rag.agent import rule_based_plan
 
     tools, reason = rule_based_plan(1, "anything", web_pending=True)
