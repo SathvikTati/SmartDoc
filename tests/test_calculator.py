@@ -325,3 +325,109 @@ class TestQuestionSuppliedFigures:
         chunks = [_chunk(1, "Employees accrue 22 days of annual leave.")]
 
         assert contributing_chunks("12 + 30", chunks, "What is 12 + 30?") == []
+
+
+# --- the worked examples in the prompt ---------------------------------
+
+from port6.services.settings.defaults import CALCULATION_TEMPLATE  # noqa: E402
+
+
+def _worked_examples(template):
+    """The (sources, question, expression) triples the prompt teaches from.
+
+    Read out of the template rather than restated here, so an example that
+    is edited is an example that is checked.
+    """
+
+    examples = []
+    sources = question = None
+
+    for line in template.splitlines():
+
+        line = line.strip()
+
+        if line.startswith("Sources:"):
+            # The trailing "Sources:" heading introduces {context}, not an
+            # example, so it carries no text of its own.
+            sources = line[len("Sources:"):].strip() or None
+            question = None
+
+        elif line.startswith("Question:"):
+            question = line[len("Question:"):].strip()
+
+            # Likewise the closing "Question: {question}".
+            if question == "{question}":
+                question = None
+
+        elif line and sources and question:
+            examples.append((sources, question, line))
+            sources = question = None
+
+    return examples
+
+
+class TestPromptExamples:
+    """A worked example is the lesson, so a wrong one teaches wrong.
+
+    The tiered case is the one that matters here: a rate that changes
+    partway through used to come back as its first band alone — 6 Saturday
+    hours priced as 4 — which is well-formed arithmetic and so passes every
+    other guard in this module.
+    """
+
+    def test_every_example_is_arithmetic_the_evaluator_accepts(self):
+        for sources, question, expression in _worked_examples(
+            CALCULATION_TEMPLATE
+        ):
+            if expression == "NONE":
+                continue
+
+            # Raises UnsafeExpression if the prompt teaches something the
+            # calculator would then refuse.
+            calculate(expression)
+
+    def test_no_example_hands_over_an_answer_instead_of_working(self):
+        for sources, question, expression in _worked_examples(
+            CALCULATION_TEMPLATE
+        ):
+            if expression == "NONE":
+                continue
+
+            assert not is_bare_literal(expression), expression
+
+    def test_a_banded_rate_is_demonstrated_and_adds_up(self):
+        banded = [
+            (sources, question, expression)
+            for sources, question, expression in _worked_examples(
+                CALCULATION_TEMPLATE
+            )
+            if "thereafter" in sources
+        ]
+
+        assert banded, "the prompt no longer shows a rate that changes"
+
+        for sources, question, expression in banded:
+            # One term per band, summed — not the first band alone.
+            assert "+" in expression, expression
+            assert calculate(expression) == pytest.approx(
+                10000 * 0.45 + 2000 * 0.25
+            )
+
+    def test_the_banded_example_spends_the_whole_quantity(self):
+        """10,000 + 2,000, against the 12,000 the question gave."""
+
+        for sources, question, expression in _worked_examples(
+            CALCULATION_TEMPLATE
+        ):
+            if "thereafter" not in sources:
+                continue
+
+            assert "12,000" in question
+
+            quantities = [
+                node
+                for node in (10000, 2000)
+                if str(node) in expression.replace(",", "")
+            ]
+
+            assert sum(quantities) == 12000
