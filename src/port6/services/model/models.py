@@ -80,6 +80,21 @@ class Document(Base):
         nullable=True,
     )
 
+    # The parser's output, kept so nothing has to parse this file twice.
+    #
+    # Only `content` used to be stored, so headings and page numbers were
+    # recovered by re-parsing the file — once during chunking, and again
+    # every time the structure page was opened. That was merely wasteful
+    # until OCR existed; now it would mean re-running OCR on a scanned
+    # document to render a page of section titles.
+    #
+    # Nullable because every document ingested before this column has none,
+    # and `load_blocks` already knows how to carry on without structure.
+    blocks = Column(
+        JSONB,
+        nullable=True,
+    )
+
     error_message = Column(
         Text,
         nullable=True,
@@ -316,8 +331,11 @@ class QueryRun(Base):
     # Which named strategy answered. `mode` is still recorded alongside
     # it: it is the family, and every run before pipelines existed has
     # one of those and no pipeline.
+    #
+    # Unbounded because a composition slug is assembled from its parts,
+    # so its length follows how many retrievers and tools it names.
     pipeline = Column(
-        String(60),
+        Text,
         nullable=True,
         index=True,
     )

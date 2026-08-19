@@ -95,7 +95,12 @@ def record_run(
 
     except Exception as exc:
         db.rollback()
-        logger.warning("Could not record query history: %s", exc)
+        # With the traceback: a swallowed write is invisible from the
+        # UI — the answer still arrives — so the log is the only place
+        # the reason can show up.
+        logger.warning(
+            "Could not record query history: %s", exc, exc_info=True
+        )
         return None
 
     finally:

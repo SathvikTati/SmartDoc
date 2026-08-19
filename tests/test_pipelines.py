@@ -2,9 +2,11 @@
 
 import pytest
 
+from port6.services.model.models import QueryRun
 from port6.services.rag import pipelines
 from port6.services.rag.base import RagMode, RetrievedChunk
 from port6.services.rag.pipelines import (
+    EXTRA_TOOLS,
     HIERARCHICAL,
     KEYWORD,
     MODE_DEFAULTS,
@@ -114,6 +116,20 @@ class TestIdentity:
         direct = Composition(retrievers=(KEYWORD,), agent=True, planner=False)
 
         assert planned.id != direct.id
+
+    def test_the_column_holds_the_widest_slug(self):
+        """A capped column silently dropped every run of the default
+        composition, and with them the whole recent-chats list: history
+        recording is best-effort, so nothing surfaced but a log line."""
+
+        widest = Composition(
+            retrievers=tuple(RETRIEVERS),
+            agent=True,
+            extra_tools=tuple(EXTRA_TOOLS),
+        )
+
+        assert QueryRun.__table__.c.pipeline.type.length is None
+        assert len(widest.id) > 60
 
 
 # --- the agent may only reach what it was given -----------------------
