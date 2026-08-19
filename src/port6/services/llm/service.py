@@ -5,6 +5,7 @@ from port6.config import (
     LLM_TEMPERATURE,
     OLLAMA_BASE_URL,
     OLLAMA_LLM_MODEL,
+    OLLAMA_NUM_CTX,
     OPENAI_API_KEY,
     OPENAI_LLM_MODEL,
 )
@@ -19,6 +20,11 @@ def get_chat_model() -> BaseChatModel:
             model=OLLAMA_LLM_MODEL,
             temperature=LLM_TEMPERATURE,
             base_url=OLLAMA_BASE_URL,
+            # Stated, not inherited. Left to Ollama the window is sized
+            # from free memory, so a loaded machine silently truncates the
+            # prompt from the front — dropping the highest-ranked source
+            # and answering confidently from what remained.
+            num_ctx=OLLAMA_NUM_CTX,
         )
 
     from langchain_openai import ChatOpenAI

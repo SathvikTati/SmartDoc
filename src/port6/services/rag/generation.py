@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 
+from port6.config import OLLAMA_NUM_CTX
 from port6.services.llm.service import get_chat_model
 from port6.services.rag.base import RetrievedChunk
 from port6.services.rag.calculator import (
@@ -50,6 +51,62 @@ def number_chunks(
         chunk.number = position
 
     return chunks
+
+
+# Rough, and deliberately pessimistic: English prose with this much
+# bracketed markup runs about 3.5 characters per token, and guessing low
+# means the budget is under-spent rather than overrun.
+CHARACTERS_PER_TOKEN = 3.5
+
+# Left for the prompt template, the question and the answer itself.
+CONTEXT_RESERVE_TOKENS = 1200
+
+
+def fit_to_context(
+    chunks: list[RetrievedChunk],
+    budget_tokens: int | None = None,
+) -> list[RetrievedChunk]:
+    """Drop the weakest sources until the context fits the model's window.
+
+    Something has to give when a large `top_k` meets a small window, and
+    the question is only *what*. Left alone the model gives up the front of
+    the prompt — llama.cpp shifts the oldest tokens out — which is the
+    highest-ranked evidence, the chunk most likely to hold the answer. It
+    then answers from the remainder with no sign anything is missing.
+
+    Measured on the sample library at top_k=16 against a 2048-token
+    window: four answers out of four, none of them right. The same
+    question against 8192 was right four out of four.
+
+    So the trim happens here instead, from the bottom, where dropping a
+    chunk means losing the least likely source rather than the most.
+    """
+
+    if not chunks:
+        return chunks
+
+    budget = budget_tokens or OLLAMA_NUM_CTX
+    allowance = int(
+        max(budget - CONTEXT_RESERVE_TOKENS, 512) * CHARACTERS_PER_TOKEN
+    )
+
+    kept = list(chunks)
+
+    while len(kept) > 1 and len(build_context(kept)) > allowance:
+        kept.pop()
+
+    if len(kept) < len(chunks):
+        logger.warning(
+            "Context budget of %d tokens fits %d of %d sources; dropped "
+            "the %d lowest-ranked rather than letting the model truncate "
+            "the highest",
+            budget,
+            len(kept),
+            len(chunks),
+            len(chunks) - len(kept),
+        )
+
+    return kept
 
 
 def build_context(
@@ -284,6 +341,11 @@ async def generate_answer(
     # can answer "I have taken 8, how many are left?" without having a
     # tool-selecting agent in front of it.
     chunks = await augment_with_calculation(query, chunks)
+
+    # Before numbering, so the markers the model is asked to cite match the
+    # sources it was actually given. Trimming after numbering would leave
+    # gaps that read as citable.
+    chunks = fit_to_context(chunks)
 
     number_chunks(chunks)
 

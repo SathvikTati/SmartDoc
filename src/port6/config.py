@@ -206,6 +206,23 @@ OLLAMA_LLM_MODEL = os.getenv(
 
 # qwen2.5-coder is a chat model and cannot produce embeddings, so the
 # local embedding model is configured separately.
+# The context window to ask Ollama for, in tokens.
+#
+# Pinned rather than inherited. Ollama sizes the window from whatever
+# memory is free when it loads a model, so the same question can be
+# answered against 2048 tokens on a busy machine and 4096 on a quiet one.
+# With `--context-shift` an overflowing prompt is not refused — the
+# beginning is dropped, and the beginning is where the best-ranked
+# evidence sits. Measured: at top_k=16 the answer was wrong 4 times out of
+# 4 against a 2048 window, and right 4 out of 4 against 8192.
+OLLAMA_NUM_CTX = int(
+    os.getenv(
+        "OLLAMA_NUM_CTX",
+        "8192",
+    )
+)
+
+
 OLLAMA_EMBEDDING_MODEL = os.getenv(
     "OLLAMA_EMBEDDING_MODEL",
     "nomic-embed-text",
