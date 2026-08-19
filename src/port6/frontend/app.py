@@ -258,14 +258,45 @@ def render_retrieval_trace(
         f"🔎 Retrieval trace — {response.get('retrieval_method', '')}"
     )
 
+    # A cached answer says so before the trace is opened. Reuse that the
+    # reader cannot see is the one way the cache could mislead — and a
+    # similarity hit answered a question that was not quite the one asked,
+    # which is worth more than a footnote.
+    cache = (response.get("metadata") or {}).get("cache")
+
+    if cache:
+        if cache.get("hit") == "semantic":
+            st.info(
+                f"↺ Reused the answer to a similarly worded question — "
+                f"\u201c{cache.get('question')}\u201d — at "
+                f"{cache.get('similarity')} similarity. Originally answered "
+                f"in {(cache.get('original_latency_ms') or 0) / 1000:.2f}s.",
+                icon="⚠️",
+            )
+        else:
+            st.success(
+                f"↺ Answered from cache. The same question was first "
+                f"answered in "
+                f"{(cache.get('original_latency_ms') or 0) / 1000:.2f}s.",
+                icon="⚡",
+            )
+
     with st.expander(header, expanded=False):
 
         top = st.columns(3)
 
         with top[0]:
+            # This lookup, not the run that produced the answer — the
+            # original figure is shown as the delta beside it.
             st.metric(
                 "Latency",
                 f"{(response.get('latency_ms') or 0) / 1000:.2f}s",
+                delta=(
+                    f"was {(cache['original_latency_ms'] or 0) / 1000:.2f}s"
+                    if cache and cache.get("original_latency_ms") is not None
+                    else None
+                ),
+                delta_color="off",
             )
 
         with top[1]:
