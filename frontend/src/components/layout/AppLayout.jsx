@@ -7,7 +7,11 @@ export function AppLayout() {
   const { documents, loading, apiOnline } = useDocuments()
 
   return (
-    <div className="flex h-screen overflow-hidden bg-canvas">
+    // `relative` makes this the containing block for anything positioned
+    // inside it, so `overflow-hidden` here is authoritative: a positioned
+    // descendant cannot resolve against the document, escape the clip and
+    // give the page a second scrollbar behind the app's own.
+    <div className="relative flex h-screen overflow-hidden bg-canvas">
       <Sidebar
         documentCount={loading ? null : documents.length}
         apiOnline={apiOnline}

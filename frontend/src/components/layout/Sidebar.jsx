@@ -91,14 +91,16 @@ export function Sidebar({ documentCount, apiOnline }) {
             <p className="text-2xs font-medium uppercase tracking-wider text-ink-subtle">
               Recent
             </p>
-            {total > RECENT_SHOWN && (
-              <Link
-                to="/history"
-                className="rounded text-2xs text-ink-subtle transition-colors hover:text-ink"
-              >
-                View all
-              </Link>
-            )}
+            {/* Offered whenever there is any history, not only once this
+                list has truncated: history is the full record with its
+                filters and per-run detail, so it is worth reaching even
+                when every chat already fits here. */}
+            <Link
+              to="/history"
+              className="rounded text-2xs text-ink-subtle transition-colors hover:text-ink"
+            >
+              View all
+            </Link>
           </div>
 
           <ul>

@@ -121,7 +121,17 @@ export function SegmentedControl({ name, value, options, onChange, className }) 
             key={option.value}
             title={option.hint}
             className={cn(
-              'cursor-pointer rounded px-2.5 py-1 text-xs font-medium',
+              // `relative` is load-bearing, not cosmetic. The input below
+              // is `sr-only`, which is `position: absolute` with no offsets
+              // — so without a positioned parent its containing block is
+              // the document, and `overflow: hidden` on the app shell does
+              // not clip a descendant whose containing block is an ancestor
+              // of the clipping element. The inputs escaped the shell,
+              // landed at their static position in document coordinates and
+              // made the whole page scrollable; scrolling a new turn into
+              // view then dragged the entire app down. Anchoring them to the
+              // label keeps them inside the scroll container they belong to.
+              'relative cursor-pointer rounded px-2.5 py-1 text-xs font-medium',
               'transition-colors select-none',
               selected
                 ? 'bg-surface text-ink shadow-panel'
