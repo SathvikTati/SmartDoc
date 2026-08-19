@@ -84,6 +84,9 @@ chroma/
 chroma_data/
 .chromadb/
 
+# Phoenix's trace store, created by run_phoenix.sh
+.phoenix/
+
 # Local databases
 *.db
 *.sqlite
