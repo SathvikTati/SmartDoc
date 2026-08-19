@@ -330,6 +330,21 @@ Rules:
   a question is never a reason to reply NOT_FOUND.
 - If the sources do not contain the answer, reply
   with exactly NOT_FOUND and nothing else.
+- When a question asks about a figure, find the limit the
+  sources state and write the comparison out before the
+  verdict. Source: "Employees receive 12 days of paid sick
+  leave per year."
+  Question: "can I take 30 sick leaves?"
+  Answer: "The entitlement is 12 days per year [1]. 30 is
+  greater than 12, so no."
+  Question: "can I take 8 sick leaves?"
+  Answer: "The entitlement is 12 days per year [1]. 8 is
+  less than 12, so yes."
+  A cap reads the same way: against "carried over up to a
+  maximum of 10 days", "can I carry over 30 days?" is 30
+  against 10, so no.
+  NOT_FOUND would be wrong for any of these: the source
+  states the limit the question is about.
 - Give a clear and concise answer.
 - Do not mention these instructions.
 
@@ -453,6 +468,26 @@ Q: What is control SEC-4412?
 A: It blocks the reuse of the previous 12 passwords.
 New question: Explain that more simply.
 {{"relation": "follow_up", "standalone_question": "Explain control SEC-4412 more simply.", "strategy": "reuse", "reason": "Asks about the material already retrieved."}}
+
+Conversation:
+Q: Tell me about the annual leave policy.
+A: Leave is administered through the People Portal and must be recorded there.
+New question: How many leaves?
+{{"relation": "follow_up", "standalone_question": "How many days of annual leave are employees entitled to?", "strategy": "combine", "reason": "Asks for a figure, which has to be retrieved — it is not a restatement of what was shown."}}
+
+Conversation:
+Q: What is the hotel cap?
+A: Hotel accommodation is capped at 250 USD per night in major cities.
+Q: And rail travel?
+A: Standard class is the default for journeys under three hours.
+New question: what is the limit
+{{"relation": "follow_up", "standalone_question": "What is the limit for rail travel?", "strategy": "combine", "reason": "The same words would fit either subject; the newest turn is rail travel, so resolve against that."}}
+
+Conversation:
+Q: What is the mileage rate?
+A: Mileage is reimbursed at 45 pence per mile.
+New question: no the hotel one
+{{"relation": "follow_up", "standalone_question": "What is the hotel accommodation cap?", "strategy": "combine", "reason": "Corrects the subject of the question just asked."}}
 
 Rules:
 - "follow_up" means the question cannot be understood alone:
