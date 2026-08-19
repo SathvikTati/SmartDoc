@@ -1,0 +1,38 @@
+# Redis, in Docker. Nothing else.
+#
+# Postgres stays as the native install that already holds the documents,
+# chats and settings, and Ollama stays on the host with its models. Only
+# the cache is containerised — it is new, it holds nothing that cannot be
+# recomputed, and this way it needs no installation to run.
+#
+#   docker compose up -d       # start
+#   docker compose down        # stop, keeping cached answers
+#   docker compose down -v     # stop and discard the cache
+#
+services:
+
+  redis:
+    image: redis:8-alpine
+    container_name: port6-redis
+    restart: unless-stopped
+    # Answers are worth keeping across a restart, but never at the cost of
+    # unbounded memory: past the limit the least recently used entries go,
+    # which is exactly the eviction a cache wants. Every entry also carries
+    # its own TTL from cache.ttl_seconds.
+    command: >
+      redis-server
+      --save 60 1
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  redis_data:

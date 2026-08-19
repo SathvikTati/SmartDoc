@@ -61,6 +61,17 @@ if not DATABASE_URL:
     )
 
 
+# The answer cache, which runs in Docker: `docker compose up -d`.
+#
+# Not required, and deliberately not validated here. A cache that is not
+# running must cost nothing but the cache — the app answers questions
+# exactly as it did before Redis existed.
+REDIS_URL = os.getenv(
+    "REDIS_URL",
+    "redis://localhost:6379/0",
+)
+
+
 # -------------------------------------------------------------------
 # YAML configuration sections
 # -------------------------------------------------------------------

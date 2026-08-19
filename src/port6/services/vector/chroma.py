@@ -72,7 +72,23 @@ def store_chunks(
         ids=ids,
     )
 
+    _invalidate_answers()
+
     return len(chunks)
+
+
+def _invalidate_answers() -> None:
+    """Drop every cached answer, because the index behind them moved.
+
+    These two functions are the only places the index changes — upload,
+    reprocess and delete all pass through one of them — so this is the
+    whole of cache invalidation. Imported here rather than at module scope
+    to keep the vector store from depending on the cache to load.
+    """
+
+    from port6.services.cache.service import clear_soon
+
+    clear_soon()
 
 
 def delete_document_chunks(
@@ -86,6 +102,8 @@ def delete_document_chunks(
             "document_id": document_id,
         }
     )
+
+    _invalidate_answers()
 
 
 def get_collection_count() -> int:

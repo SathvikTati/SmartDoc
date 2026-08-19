@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import time
 
+from port6.services.cache import service as answer_cache
+from port6.services.embeddings.service import get_embeddings
 from port6.services.llm.errors import classify as classify_provider_error
 from port6.services.rag import pipelines, smalltalk
 from port6.services.rag.base import RagMode, RagResult, RetrievedChunk
@@ -83,6 +85,64 @@ def smalltalk_result(
     )
 
 
+# A web answer expires sooner than a library answer. Clearing the cache on
+# document changes cannot cover the public internet, so time is the only
+# guard there is on a result that came off it.
+WEB_CACHE_TTL_SECONDS = 3600
+
+
+async def _embed_for_cache(question: str):
+    """The question as a vector, or None if it cannot be had.
+
+    Best-effort: the similarity tier is an optimisation, and an embedding
+    call that fails should cost the lookup, not the answer.
+    """
+
+    try:
+        return await get_embeddings().aembed_query(
+            answer_cache.normalise(question)
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "Could not embed %r for the cache: %s",
+            question,
+            exc,
+        )
+        return None
+
+
+async def _cache_lookup(question: str, scope: str):
+    """`(cached result or None, embedding or None)`.
+
+    The exact tier is tried first precisely so a repeat question costs one
+    `GET` and no embedding call. The embedding is handed back on a miss so
+    that storing the answer afterwards does not compute it a second time.
+    """
+
+    exact = await answer_cache.lookup_exact(question, scope)
+
+    if exact is not None:
+        return exact, None
+
+    embedding = await _embed_for_cache(question)
+
+    if embedding is None:
+        return None, None
+
+    return await answer_cache.lookup_similar(embedding, scope), embedding
+
+
+def _cache_ttl(result: RagResult) -> int:
+
+    ttl = get_int("cache.ttl_seconds")
+
+    if "web_search" in (result.metadata.get("tools_used") or []):
+        return min(ttl, WEB_CACHE_TTL_SECONDS)
+
+    return ttl
+
+
 async def query(
     question: str,
     mode: str | RagMode = RagMode.NAIVE,
@@ -117,6 +177,35 @@ async def query(
     if reply is not None:
         logger.info("Answering %r as %s without retrieving", question, reply.kind)
         return smalltalk_result(question, reply, resolved, started)
+
+    # Below smalltalk on purpose: a greeting never retrieved anything, so
+    # there is nothing about it worth keeping.
+    scope = answer_cache.scope_digest(selected.id, top_k, document_ids)
+
+    caching = answer_cache.enabled()
+    embedding = None
+
+    if caching:
+        cached, embedding = await _cache_lookup(question, scope)
+
+        if cached is not None:
+            # The stored latency belongs to the run that produced the
+            # answer, not to this lookup. Reporting it unchanged made a
+            # cache hit claim the 27 seconds it had just avoided; the
+            # original figure is kept under `cache.original_latency_ms`,
+            # which is where it is a saving rather than a lie.
+            cached.latency_ms = round(
+                (time.perf_counter() - started) * 1000,
+                2,
+            )
+
+            logger.info(
+                "Answered %r from cache (%s hit) in %.1fms",
+                question,
+                cached.metadata["cache"]["hit"],
+                cached.latency_ms,
+            )
+            return cached
 
     try:
         result = await pipelines.run(
@@ -179,6 +268,20 @@ async def query(
     result.metadata.setdefault("mode", resolved.value)
     result.metadata.setdefault("pipeline", selected.id)
     result.metadata.setdefault("pipeline_label", selected.label)
+
+    # Only here, never on the failure path above: a stopped Ollama or an
+    # expired key is a passing condition, and caching its message would
+    # keep serving it after the fix. "No answer in the library" is stored,
+    # though — that is a real finding, and uploading the missing document
+    # clears the cache anyway.
+    if caching:
+        await answer_cache.store(
+            question,
+            scope,
+            result,
+            embedding=embedding,
+            ttl_seconds=_cache_ttl(result),
+        )
 
     return result
 

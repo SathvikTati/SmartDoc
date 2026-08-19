@@ -14,7 +14,7 @@ import { Panel, SectionHeading } from '@/components/ui/Panel'
 import { AnswerBody } from './AnswerBody'
 import { ChunkCard } from './ChunkCard'
 import { RetrievalTrace } from './RetrievalTrace'
-import { formatLatency } from '@/lib/format'
+import { formatLatency, formatRelative } from '@/lib/format'
 
 const MODE_LABELS = {
   naive: 'Naive',
@@ -66,6 +66,27 @@ function CopyAnswer({ text }) {
   )
 }
 
+
+function cacheTitle(cache) {
+  const when = cache.answered_at
+    ? `first answered ${formatRelative(cache.answered_at)}`
+    : 'first answered earlier'
+
+  const saved =
+    cache.original_latency_ms != null
+      ? `, which took ${formatLatency(cache.original_latency_ms)}`
+      : ''
+
+  if (cache.hit === 'semantic') {
+    return (
+      `Reused the answer to a similarly worded question — ` +
+      `“${cache.question}” — at ${cache.similarity} cosine similarity. ` +
+      `That question was ${when}${saved}.`
+    )
+  }
+
+  return `The same question was ${when}${saved}.`
+}
 
 export function InvestigationView({ result, mode }) {
   const [activeNumber, setActiveNumber] = useState(null)
@@ -133,6 +154,8 @@ export function InvestigationView({ result, mode }) {
     (chunk) => !citedNumbers.has(chunk.number),
   )
 
+  const cache = result.metadata?.cache
+
   // A greeting is answered without retrieving, so the four evidence
   // panels below would all be empty. Showing them implies a search
   // happened and found nothing, which is not what occurred.
@@ -161,9 +184,38 @@ export function InvestigationView({ result, mode }) {
           {result.question}
         </p>
         <div className="flex shrink-0 items-center gap-1.5 pt-1">
+          {/* A cached answer says so, when it was first answered, and —
+              for a similarity hit — which question it actually answered.
+              That last one matters: the wording asked for was not the
+              wording answered, and leaving that invisible would be the one
+              way this cache could mislead. */}
+          {cache && (
+            <Badge
+              tone={cache.hit === 'semantic' ? 'warn' : 'ok'}
+              className="cursor-help"
+            >
+              <span title={cacheTitle(cache)}>
+                {cache.hit === 'semantic'
+                  ? `Cached ${formatRelative(cache.answered_at)} · similar ${cache.similarity}`
+                  : `Cached ${formatRelative(cache.answered_at)}`}
+              </span>
+            </Badge>
+          )}
           <Badge tone="neutral">{MODE_LABELS[mode] ?? mode}</Badge>
+          {/* The latency of *this* run. On a cache hit that is the lookup,
+              with the original run's figure alongside it, so the saving is
+              legible instead of the cached answer appearing to have taken
+              the time it just avoided. */}
           <Badge tone="neutral">
-            <span className="tnum">{formatLatency(result.latency_ms)}</span>
+            <span className="tnum">
+              {formatLatency(result.latency_ms)}
+              {cache?.original_latency_ms != null && (
+                <span className="text-ink-subtle">
+                  {' '}
+                  vs {formatLatency(cache.original_latency_ms)}
+                </span>
+              )}
+            </span>
           </Badge>
         </div>
       </div>
@@ -223,6 +275,23 @@ export function InvestigationView({ result, mode }) {
                 No answer in the library
               </p>
               <p className="mt-0.5 text-sm text-ink-muted">{result.answer}</p>
+              {/* Without this the evidence panel below reads as a
+                  contradiction: passages were plainly found, yet nothing
+                  was answered. Retrieval returns its nearest matches
+                  whether or not any of them fit, so "5 retrieved · 5
+                  unused" is the expected shape of a refusal rather than a
+                  sign one went wrong — and saying so is what stops a
+                  correct refusal from looking like a fault. */}
+              {result.retrieved_chunks.length > 0 && (
+                <p className="mt-1.5 text-xs text-ink-subtle">
+                  The {result.retrieved_chunks.length} passages below are
+                  the closest matches, not relevant ones — retrieval
+                  returns its nearest results either way, and none of these
+                  supported an answer. Rephrasing may help; if the topic
+                  should be covered, check that the document is uploaded
+                  and ready.
+                </p>
+              )}
             </div>
           </div>
         )}
