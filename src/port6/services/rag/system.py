@@ -20,7 +20,6 @@ from port6.services.rag.base import RagMode, RagResult, RetrievedChunk
 from port6.services.rag.conversation import (
     REUSE,
     Resolution,
-    merge_context,
     resolve,
 )
 from port6.services.rag.generation import generate_answer
@@ -150,6 +149,7 @@ async def query(
     document_ids: list[str] | None = None,
     composition=None,
     use_cache: bool = True,
+    carried: list[RetrievedChunk] | None = None,
 ) -> RagResult:
     """Answer a question, optionally restricted to specific documents.
 
@@ -187,7 +187,10 @@ async def query(
     # there is nothing about it worth keeping.
     scope = answer_cache.scope_digest(selected.id, top_k, document_ids)
 
-    caching = use_cache and answer_cache.enabled()
+    # Never cached when context was carried in: the answer depends on the
+    # conversation that produced it, and the key describes only the
+    # question, the pipeline and the library.
+    caching = use_cache and not carried and answer_cache.enabled()
     embedding = None
 
     if caching:
@@ -218,6 +221,7 @@ async def query(
             question,
             top_k=top_k,
             document_ids=document_ids,
+            carried=carried,
         )
 
     except Exception as exc:
@@ -340,6 +344,20 @@ async def compare_modes(
 # Conversational queries
 # -------------------------------------------------------------------
 
+def _family_of(mode, composition) -> RagMode:
+    """The family to report, from whichever of the two the caller gave.
+
+    `query()` derives this from the composition and `mode` is only its
+    coarse alias, so anything reporting a family has to accept either —
+    including neither, which means the configured default.
+    """
+
+    if composition is not None:
+        return composition.family
+
+    return pipelines.resolve(mode=mode).family
+
+
 async def query_in_chat(
     question: str,
     turns: list[dict],
@@ -434,7 +452,12 @@ async def query_in_chat(
             retrieval_method="reused the previous turn's sources",
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             metadata={
-                "mode": resolve_mode(mode).value,
+                # From the composition, not from `mode`. /ask names a
+                # composition and leaves `mode` unset, so resolve_mode(None)
+                # raised here — a 500 on any follow-up that reused the
+                # previous turn's sources, which is the one path in this
+                # function that does not go through `query()`.
+                "mode": _family_of(mode, composition).value,
                 "top_k": top_k,
                 "chunks_retrieved": len(chunks),
                 # Reported even when the answer reads cleanly, so a figure
@@ -461,8 +484,35 @@ async def query_in_chat(
             },
         )
 
-        _attach_resolution(result, resolution)
-        return result, resolution
+        # Reuse is a bet that the previous turn's sources cover this
+        # question too. When they do not, the turn used to fail outright:
+        # "how many leaves?" after a turn whose chunks happened to miss the
+        # entitlement section reported the library empty, while retrieving
+        # on the rewritten question finds "22 days" first time. Falling
+        # through costs the retrieval the bet was trying to save, which is
+        # the right price for an answer.
+        if generated["answered"]:
+            _attach_resolution(result, resolution)
+            return result, resolution
+
+        logger.info(
+            "Reused sources did not answer %r; retrieving instead",
+            resolution.search_question,
+        )
+
+    # Handed to retrieval, not merged into the result afterwards.
+    #
+    # This used to call merge_context() on the finished result, which meant
+    # the carried chunks were decoration: generation had already run
+    # without them. A follow-up like "compare it with our company policy"
+    # could not see the previous turn's web results, answered "not in the
+    # library", and then listed those very chunks as retrieved-but-unused —
+    # unused because nothing had read them.
+    carried = (
+        previous_chunks[: get_int("conversation.carry_over_chunks")]
+        if resolution.is_follow_up and previous_chunks
+        else None
+    )
 
     result = await query(
         resolution.search_question,
@@ -470,17 +520,11 @@ async def query_in_chat(
         top_k=top_k,
         document_ids=document_ids,
         composition=composition,
+        carried=carried,
     )
 
     # The user asked their question, not the rewritten one.
     result.question = question
-
-    if resolution.is_follow_up and previous_chunks:
-        result.retrieved_chunks = merge_context(
-            result.retrieved_chunks,
-            previous_chunks,
-            carry_over=get_int("conversation.carry_over_chunks"),
-        )
 
     _attach_resolution(result, resolution)
 

@@ -40,6 +40,7 @@ from port6.services.rag.aggregation import (
     is_aggregation_question,
 )
 from port6.services.rag.base import RagResult, RetrievedChunk
+from port6.services.rag.conversation import merge_context
 from port6.services.rag.generation import build_context, generate_answer
 from port6.services.rag.tools import (
     TOOLS,
@@ -87,6 +88,11 @@ class AgentState(TypedDict, total=False):
 
     # True once the web has been tried, so the fallback below runs once.
     web_attempted: Annotated[bool, _keep_last]
+
+    # Chunks from the previous turn of a conversation, handed in rather
+    # than retrieved. No node writes this, so `_keep_last` preserves it
+    # across every attempt and the web fallback.
+    carried_chunks: Annotated[list[RetrievedChunk], _keep_last]
 
     final_context: Annotated[list[RetrievedChunk], _keep_last]
 
@@ -511,6 +517,8 @@ async def node_context_builder(state: AgentState) -> dict:
             budget=top_k,
         )["chunks"]
 
+        ordered = merge_context(ordered, state.get("carried_chunks") or [])
+
         for position, chunk in enumerate(ordered, start=1):
             chunk.number = position
 
@@ -540,7 +548,13 @@ async def node_context_builder(state: AgentState) -> dict:
             chunk.score if chunk.score is not None else 1e9,
         )
 
-    ordered = sorted(chunks, key=sort_key)[:top_k]
+    # After the trim, not before: carried chunks arrive without a fused
+    # rank, so they sort last and `[:top_k]` would discard exactly the
+    # context the follow-up was given them for.
+    ordered = merge_context(
+        sorted(chunks, key=sort_key)[:top_k],
+        state.get("carried_chunks") or [],
+    )
 
     for position, chunk in enumerate(ordered, start=1):
         chunk.number = position
@@ -754,6 +768,7 @@ async def run(
     top_k: int = 5,
     document_ids: list[str] | None = None,
     composition=None,
+    carried: list[RetrievedChunk] | None = None,
 ) -> RagResult:
 
     started = time.perf_counter()
@@ -776,6 +791,7 @@ async def run(
             if composition.planner
             else 1,
             "allowed_tools": composition.allowed_tools,
+            "carried_chunks": carried or [],
         }
     )
 

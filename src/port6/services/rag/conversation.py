@@ -104,9 +104,13 @@ def first_turn(question: str) -> Resolution:
 
 # A question carrying none of these needs no conversation to be searchable,
 # so the classifier is skipped and it is treated as a new topic. This is the
-# cheap half of the decision: it removes a model call from most questions
-# and it can only ever fail *safe*, because the fallback is to ignore prior
-# context rather than to apply it.
+# cheap half of the decision: it removes a model call from most questions.
+#
+# It is not, as this comment once claimed, a gate that can only fail safe.
+# Ignoring context that a question needed produces a confident "not in the
+# library" for something the previous turn had just answered — which reads
+# as the document being missing rather than the question being misread. So
+# the signals below err towards consulting the classifier.
 _DEPENDENT_SIGNALS = [
     r"^\s*(and|but|so|also|then)\b",
     r"\bwhat about\b",
@@ -115,17 +119,55 @@ _DEPENDENT_SIGNALS = [
     # Bare pronouns and demonstratives with no noun of their own.
     r"\b(it|its|they|them|their|those|these|that|this|there)\b",
     r"\b(he|she|his|her|him)\b",
-    # A bare interrogative with almost no body of its own: "Who is
+    # A bare interrogative with little body of its own: "Who is
     # eligible?" (12 characters after the word) depends on context;
-    # "How much annual leave do employees get?" (35) does not.
-    r"^\s*(who|when|where|why|how|which)\b[^?]{0,20}\??\s*$",
+    # "How much annual leave do employees get?" (39) does not.
+    #
+    # 34 rather than 20, because 20 let "Which benefits are restricted?"
+    # (24) through as self-contained. Searched as written it retrieves
+    # nothing about the probation restrictions the conversation was
+    # actually discussing, and the turn came back "not in the library"
+    # immediately after a turn that had answered exactly that. The
+    # self-contained questions this now sends to the classifier —
+    # "Which policy covers international travel expenses?",
+    # "When must carried-over annual leave be taken by?" — all stay
+    # above it, and library-wide questions are short-circuited above.
+    r"^\s*(who|when|where|why|how|which)\b[^?]{0,34}\??\s*$",
     r"\b(the same|similar|instead|as well|too|either)\b",
     r"\b(more|less|further|another|other|next|previous)\b",
     r"\b(explain|elaborate|clarify|simpler|summari[sz]e)\b",
+    # A correction of the turn before it: "no the annual leaves", "i meant
+    # annual leave", "actually annual". These are the most unmistakable
+    # follow-ups there are, and every one of them used to be searched as
+    # written — so the correction was answered as though it were a fresh
+    # question about the words "no the annual leaves", and failed.
+    r"^\s*(no|nope|not)\b",
+    r"^\s*actually\b",
+    r"\b(i meant|i mean)\b",
     r"^\s*\w+\s*\??\s*$",
 ]
 
 _DEPENDENT = [re.compile(pattern, re.IGNORECASE) for pattern in _DEPENDENT_SIGNALS]
+
+_WORDS = re.compile(r"[A-Za-z0-9']+")
+
+# At or below this, a question inside a conversation is taken as dependent
+# whatever words it uses.
+#
+# The signal list above is a list of *shapes*, and questions kept arriving
+# in shapes nobody had thought of — "total how many?", "same for annual?",
+# "for annual leave?" carry no pronoun, open with no interrogative, and are
+# plainly about the turn before them. Each one was searched as written and
+# reported the library empty.
+#
+# Length is the property they share. Four words cannot describe a subject,
+# a scope and a question at once, so in a conversation they are leaning on
+# what came before. Four rather than more because it covers every case seen
+# without sending much else to the classifier: of a dozen genuinely
+# self-contained questions only three cross it, and being sent to the
+# classifier costs a model call, not a wrong answer — it replies
+# "new_topic" and the question is searched as written anyway.
+MAX_SELF_CONTAINED_WORDS = 4
 
 
 def looks_self_contained(question: str) -> bool:
@@ -136,6 +178,9 @@ def looks_self_contained(question: str) -> bool:
     # with a bare interrogative.
     if is_aggregation_question(question):
         return True
+
+    if len(_WORDS.findall(question or "")) <= MAX_SELF_CONTAINED_WORDS:
+        return False
 
     return not any(pattern.search(question or "") for pattern in _DEPENDENT)
 
@@ -294,14 +339,17 @@ async def resolve(
 def merge_context(
     fresh_chunks: list[RetrievedChunk],
     previous_chunks: list[RetrievedChunk],
-    carry_over: int,
+    carry_over: int | None = None,
 ) -> list[RetrievedChunk]:
     """Newly retrieved chunks, plus a few carried from the previous turn.
 
     Fresh chunks lead: the follow-up was rewritten to be searchable, so
     what it retrieves is the better evidence. Prior chunks fill in what the
     rewrite could not recover — the specifics the user is still talking
-    about — and are capped so they cannot outweigh the new material.
+    about, and web results no amount of re-retrieval will bring back.
+
+    `carry_over` caps how many are kept, so they cannot outweigh the new
+    material. `None` means the caller has already capped them.
     """
 
     seen = {chunk.chunk_id for chunk in fresh_chunks}
@@ -310,7 +358,10 @@ def merge_context(
         chunk
         for chunk in previous_chunks
         if chunk.chunk_id not in seen
-    ][:carry_over]
+    ]
+
+    if carry_over is not None:
+        carried = carried[:carry_over]
 
     merged = [*fresh_chunks, *carried]
 

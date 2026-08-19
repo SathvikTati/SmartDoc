@@ -156,17 +156,54 @@ def load_turns(
     return turns
 
 
+# Turns to look back through for reusable sources. A conversation's own
+# length bounds this in practice; the cap is here so one query cannot grow
+# with the history.
+REUSE_LOOKBACK = 20
+
+
+def pick_reusable(runs: list) -> object | None:
+    """The most recent run worth reusing, from newest first.
+
+    Preferring one that answered is the whole point. Retrieval always
+    returns its nearest neighbours, so a turn that answered nothing still
+    stored chunks, and reusing those guarantees the next turn answers
+    nothing either — which is how one misread follow-up became two failed
+    ones. Falling back to the newest run of any kind keeps a conversation
+    whose every turn has failed from having no context at all.
+    """
+
+    for run in runs:
+        if getattr(run, "answered", False):
+            return run
+
+    return runs[0] if runs else None
+
+
 def previous_chunks(chat_id: str) -> list[RetrievedChunk]:
-    """The chunks the last turn retrieved, rebuilt from its stored result."""
+    """The sources of the last turn that actually answered.
+
+    The last turn *retrieved* is not the same thing. Retrieval always
+    returns its nearest neighbours, so a turn that answered nothing still
+    stored five chunks — and reusing those guarantees the next turn
+    answers nothing either. That is what turned one missed follow-up into
+    two: a question was misread as a new topic and came back empty, then
+    the question after it reused the empty turn's sources and came back
+    empty for a different reason.
+
+    Falling back to the most recent turn of any kind keeps a conversation
+    whose first turn failed from having no context at all.
+    """
 
     db = SessionLocal()
 
     try:
-        run = (
+        runs = (
             db.query(QueryRun)
             .filter(QueryRun.chat_id == chat_id)
             .order_by(QueryRun.turn_index.desc())
-            .first()
+            .limit(REUSE_LOOKBACK)
+            .all()
         )
 
     except Exception as exc:
@@ -175,6 +212,8 @@ def previous_chunks(chat_id: str) -> list[RetrievedChunk]:
 
     finally:
         db.close()
+
+    run = pick_reusable(runs)
 
     if run is None:
         return []

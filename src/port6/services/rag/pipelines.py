@@ -33,6 +33,7 @@ from port6.services.rag.aggregation import (
     is_aggregation_question,
 )
 from port6.services.rag.base import RagMode, RagResult, RetrievedChunk
+from port6.services.rag.conversation import merge_context
 from port6.services.rag.generation import generate_answer
 from port6.services.rag.hierarchical import hierarchical_search
 from port6.services.rag.retrievers import (
@@ -509,8 +510,15 @@ async def run(
     question: str,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    carried: list[RetrievedChunk] | None = None,
 ) -> RagResult:
-    """Answer a question with one composition."""
+    """Answer a question with one composition.
+
+    `carried` is context from the previous turn of a conversation, handed
+    in rather than retrieved. It reaches the model alongside what this
+    question retrieves — which is the whole point of carrying it, and was
+    not true while the merge happened after generation had already run.
+    """
 
     if composition.agent:
         from port6.services.rag import agent
@@ -520,6 +528,7 @@ async def run(
             top_k=top_k,
             document_ids=document_ids,
             composition=composition,
+            carried=carried,
         )
 
     started = time.perf_counter()
@@ -537,7 +546,10 @@ async def run(
 
     found = await _retrieve(composition, question, top_k, document_ids)
 
-    result = await generate_answer(question, found.chunks)
+    # Before generation, not after: fresh chunks lead, carried ones follow.
+    context = merge_context(found.chunks, carried or [])
+
+    result = await generate_answer(question, context)
 
     agreed = [chunk for chunk in found.chunks if len(chunk.sources) > 1]
 
