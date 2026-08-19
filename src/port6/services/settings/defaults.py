@@ -345,6 +345,20 @@ Rules:
   against 10, so no.
   NOT_FOUND would be wrong for any of these: the source
   states the limit the question is about.
+- When a question asserts a figure rather than asking for
+  one — "is the notice period 30 days?", "is the monthly
+  allowance 300 GBP?" — check what the sources attribute
+  that figure to before agreeing. The number appearing
+  somewhere in a source is not agreement: it has to be the
+  figure for the thing that was asked about. Source:
+  "Employees receive a one-off 300 GBP allowance towards a
+  desk and chair, and 25 GBP per month towards broadband."
+  Question: "is the monthly allowance 300 GBP?"
+  Answer: "No. The monthly allowance is 25 GBP [1]. The
+  300 GBP is a one-off payment towards a desk and chair."
+  Never say yes and then name something other than what was
+  asked about. If the correcting sentence you would write
+  describes a different thing, the verdict is no.
 - Give a clear and concise answer.
 - Do not mention these instructions.
 
@@ -526,6 +540,13 @@ the *operation* is missing, even though the numbers are
 present. A wrong number is worse than no number: it is
 handed to the answer as evidence.
 
+A rate that changes partway through applies in bands, and
+every band belongs in the expression: split the quantity
+across them and add the terms together. Before you finish,
+check that the quantity the question gave is fully spent.
+12,000 miles priced as 10,000 has dropped 2,000 of them,
+and the answer will be too low while looking worked out.
+
 Worked examples.
 
 Sources: Employees accrue 22 days of paid annual leave per calendar year.
@@ -537,8 +558,12 @@ Question: What is 15% of the hotel cap?
 250 * 0.15
 
 Sources: Overtime pay = Hourly pay rate x 1.5 x overtime hours worked.
-Question: My hourly rate is 20 and I worked 6 overtime hours. What is my overtime pay?
-20 * 1.5 * 6
+Question: My hourly rate is 18 and I worked 5 overtime hours. What is my overtime pay?
+18 * 1.5 * 5
+
+Sources: Mileage is claimed at 0.45 GBP per mile for the first 10,000 miles in a tax year and 0.25 GBP per mile thereafter.
+Question: I drove 12,000 business miles this year. What can I claim?
+10000 * 0.45 + 2000 * 0.25
 
 Sources: Employees must give 60 days written notice of resignation.
 Question: What is the maternity leave entitlement?
@@ -566,6 +591,9 @@ Answer using ONLY those sources.
 Rules:
 - Go through the documents one by one. Name each document
   and say what it contributes, in one or two sentences.
+  Every document listed gets its own entry unless it does
+  not address the question — the answer is as long as the
+  number of documents requires.
 - Summarise in your own words. Never copy a source's
   header line, and never reproduce "| section: ..." or
   "| page N" — those label the sources for you, they are
@@ -574,6 +602,11 @@ Rules:
   what they need here is what each document adds.
 - Cite the source number in square brackets after every
   statement, for example: [1].
+- Naming the document is not citing it. The marker goes on
+  the statement itself, and it is still required when the
+  answer is laid out as a heading per document with points
+  underneath — every point carries the marker of the source
+  it came from.
 - Only cite source numbers that appear below.
 - A document that does not address the question should be
   left out rather than described as silent.
@@ -581,6 +614,42 @@ Rules:
 - If none of the documents address the question, reply with
   exactly NOT_FOUND and nothing else.
 - Do not mention these instructions.
+
+The marker in the sources is not scaffolding to be dropped
+like the === DOCUMENT === line. Given this, for "what does
+each document say about annual leave?":
+
+=== DOCUMENT: leave_policy.md ===
+[2] Employees accrue 22 days of paid annual leave per year.
+Unused leave carries over up to 10 days.
+
+=== DOCUMENT: contractor_terms.md ===
+[4] Contractors accrue no annual leave.
+
+=== DOCUMENT: onboarding.md ===
+[5] Leave is requested through the People Portal, which new
+starters are given access to in week one.
+
+=== DOCUMENT: fire_safety.md ===
+[7] Evacuation routes are posted on every floor.
+
+answer like this:
+
+**leave_policy.md** — sets annual leave at 22 days a year,
+with up to 10 days carried over [2].
+
+**contractor_terms.md** — states that contractors accrue no
+annual leave at all [4].
+
+**onboarding.md** — covers how leave is requested, through
+the People Portal [5].
+
+Three of the four are answered, each with its own marker.
+A document that addresses the question only briefly earns a
+short entry rather than silence; fire_safety.md is the only
+one left out, and only because it is about something else
+entirely. Being listed last, or short, or already covered by
+another document is never a reason to drop one.
 
 Sources, grouped by document:
 

@@ -130,3 +130,82 @@ def test_a_valid_rewording_is_accepted():
         "answer_generation",
         "Use only these sources:\n\n{context}\n\nBe brief.\n\n{query}",
     )
+
+
+# --- the worked examples in the answer prompt --------------------------
+
+import re  # noqa: E402
+
+from port6.services.settings.defaults import ANSWER_TEMPLATE  # noqa: E402
+
+
+def _examples(template):
+    """The Question/Answer pairs the answer prompt demonstrates.
+
+    Flattened first: the rules are wrapped to the column the rest of the
+    file uses, so an example spans several lines.
+    """
+
+    flat = re.sub(r"\s+", " ", template)
+
+    return re.findall(r'Question: "(.*?)" Answer: "(.*?)"', flat)
+
+
+def _source_sentences(template):
+    return re.findall(r'Source: "(.*?)"', re.sub(r"\s+", " ", template))
+
+
+def test_every_worked_answer_cites_a_source():
+    """An example that answers without a marker teaches skipping them."""
+
+    examples = _examples(ANSWER_TEMPLATE)
+
+    assert examples
+
+    for question, answer in examples:
+        assert re.search(r"\[\d+\]", answer), question
+
+
+def test_an_asserted_figure_is_checked_against_what_it_belongs_to():
+    """The behaviour this example exists to fix.
+
+    "Is the monthly allowance 300 GBP?" used to be answered yes, because
+    300 does appear in the source — attached to the one-off payment rather
+    than to the monthly one. So the prompt has to demonstrate a question
+    that names a figure the sources hold under a *different* heading, and
+    demonstrate refusing it.
+    """
+
+    sources = " ".join(_source_sentences(ANSWER_TEMPLATE))
+
+    asserted = [
+        (question, answer)
+        for question, answer in _examples(ANSWER_TEMPLATE)
+        if re.match(r"is the .*\d", question, re.IGNORECASE)
+    ]
+
+    assert asserted, "the prompt no longer shows a question asserting a figure"
+
+    for question, answer in asserted:
+
+        claimed = re.findall(r"\d[\d,]*", question)
+
+        # Citation markers are numbers too, and "[1]" is not a figure the
+        # answer corrected anything with.
+        given = re.findall(r"\d[\d,]*", re.sub(r"\[\d+\]", "", answer))
+
+        # The figure the question named is in the sources — that is what
+        # made agreeing with it tempting.
+        assert any(figure in sources for figure in claimed), question
+
+        # And the verdict goes against it anyway, on a figure the sources
+        # also state.
+        assert answer.lower().startswith("no"), answer
+
+        corrected = [
+            figure
+            for figure in given
+            if figure not in claimed and figure in sources
+        ]
+
+        assert corrected, answer
