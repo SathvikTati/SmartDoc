@@ -399,7 +399,14 @@ def build_grouped_context(
     for chunk in chunks:
         grouped.setdefault(chunk.filename, []).append(chunk)
 
-    blocks = []
+    # The count leads, because the answer is an enumeration and the model
+    # has to know how long it is meant to be. Without it a 7B writes two or
+    # three entries and stops, and the document it stops before is a real
+    # omission — travel_policy.md was dropped from a four-document probation
+    # answer while sitting in the context, on topic.
+    blocks = [
+        f"{len(grouped)} document(s) are listed below."
+    ]
 
     for filename, group in grouped.items():
 

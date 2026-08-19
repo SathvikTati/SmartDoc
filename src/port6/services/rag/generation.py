@@ -399,6 +399,49 @@ async def generate_answer(
                 "conflicts": conflicts,
             }
 
+    # The mirror of the degenerate case, and the more damaging one: prose
+    # with no markers anywhere. The aggregate layout is where it happens —
+    # the model writes a heading per document with bullets underneath and
+    # drops every marker on the way — and nothing downstream can recover
+    # from it. Each source comes back "retrieved, unused", so a good answer
+    # over four documents arrives with no evidence attached to any of it.
+    #
+    # The markers cannot be added here afterwards. A citation this system
+    # wrote rather than read is exactly the laundered attribution the rest
+    # of this module refuses, so the model is asked again instead.
+    if (
+        not answer.upper().startswith(NOT_FOUND_MARKER)
+        and not extract_cited_numbers(answer)
+    ):
+        logger.warning(
+            "Model answered without citing anything (%d sources given); "
+            "retrying with an explicit instruction",
+            len(chunks),
+        )
+
+        retried = await _invoke(
+            chain,
+            (
+                f"{asked}\n\n"
+                "Put the source number in square brackets after every "
+                "statement, for example [1]. A heading naming the "
+                "document is not a citation: the marker goes on the "
+                "statement itself, including inside a list."
+            ),
+            context,
+        )
+
+        # Kept only if it actually fixed the problem. A retry that comes
+        # back worse — shorter, or still bare — should not replace an
+        # answer that at least reads correctly.
+        if extract_cited_numbers(retried) and not is_degenerate(retried):
+            answer = retried
+
+        else:
+            logger.warning(
+                "Retry still cited nothing; answering with no citations"
+            )
+
     if answer.upper().startswith(NOT_FOUND_MARKER):
 
         logger.info(
