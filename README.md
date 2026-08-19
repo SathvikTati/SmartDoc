@@ -20,15 +20,24 @@ The system is being built as a foundation for a future document intelligence / L
 
 ## Running It
 
-Two processes:
+Two processes, plus a container:
 
 ```bash
-# 1. API (also runs ingestion in background threads)
+# 1. The answer cache
+docker compose up -d
+
+# 2. API (also runs ingestion in background threads)
 uv run uvicorn port6.main:app --reload
 
-# 2. Frontend
+# 3. Frontend
 cd frontend && npm install && npm run dev
 ```
+
+Redis is the only containerised part. Postgres and Ollama stay where they
+are — one holds the documents, the other holds the models. The cache holds
+nothing that cannot be recomputed, which is exactly why it is the piece
+worth running from an image. Skip step 1 and everything still works, one
+warning heavier and no faster on a repeated question.
 
 The UI opens on http://localhost:5173, which lands on **Ask**. It talks to
 the API over HTTP; in development `/api/*` is proxied to
@@ -84,8 +93,8 @@ Three places, split by how often a value changes and what it affects.
 
 | Where | Holds | Changed by |
 |---|---|---|
-| `.env` | Everything about which model to call: providers, model names, temperature, API key, `OLLAMA_BASE_URL`, `DATABASE_URL`, CORS origins | Editing the file and restarting |
-| **Database** | The four prompts, plus runtime tuning: chunk size and overlap, `retrieval.max_distance`, summary limits, agent attempts and catalogue size, validation thresholds, history retention | `GET/PUT /settings`, `GET/PUT /prompts` — live on the next request |
+| `.env` | Everything about which model to call: providers, model names, temperature, API key, `OLLAMA_BASE_URL`, `DATABASE_URL`, `REDIS_URL`, CORS origins | Editing the file and restarting |
+| **Database** | The four prompts, plus runtime tuning: chunk size and overlap, `retrieval.max_distance`, summary limits, agent attempts and catalogue size, validation thresholds, history retention, OCR limits, cache TTL and similarity threshold | `GET/PUT /settings`, `GET/PUT /prompts` — live on the next request |
 | `config.yaml` | Deploy-time facts: upload limits and allowed types, the Chroma path and collection | Editing the file and restarting |
 
 Provider choice is deliberately *not* runtime-tunable: switching embedding
@@ -115,10 +124,12 @@ curl -X POST http://localhost:8000/prompts/answer_generation/reset
 uv run pytest
 ```
 
-53 tests over the pure logic the pipeline turns on: heading detection and
+334 tests over the pure logic the pipeline turns on: heading detection and
 the section tree, chunk boundaries and the page a chunk is cited with, RRF
 fusion, citation extraction and hallucination-dropping, evidence overlap,
-provider-failure classification, and the prompt-edit guard.
+provider-failure classification, the prompt-edit guard, per-page OCR
+classification and its page budget, and both tiers of the answer cache with
+the guards that keep a near-miss from answering the wrong question.
 
 ---
 
@@ -280,6 +291,101 @@ not host the UI, which is why the dependency is `arize-phoenix-otel` and
 not the server package. Off by default, and every failure inside it is
 swallowed — observability that can take the service down is worse than
 none.
+
+---
+
+## Scanned Documents
+
+A scanned PDF is a picture of a page: the words are pixels, `get_text()`
+returns nothing, and the file used to be refused as empty before it became
+a document at all. OCR fills that in, through PyMuPDF and Tesseract — so it
+costs no new Python package, only the `tesseract` binary.
+
+Classification is **per page**, because one file mixes the cases:
+
+| Page has text | Page has images | What happens |
+|---|---|---|
+| yes | no | nothing, and no cost |
+| yes | yes | only the images are read; the text layer is kept as-is |
+| no | yes | the page is rasterised and read whole |
+| no | no | a genuinely blank page |
+
+The middle row is the one worth having. A scanned table pasted into an
+otherwise digital document is text nobody can search for, and reading only
+the images recovers it without reading the surrounding paragraphs twice.
+
+OCR runs inside the upload request, so it is bounded: `ocr.max_pages`
+(default 20) is checked against the whole file *before* a single page is
+rasterised, and a larger file is refused with a 400 naming both numbers.
+The check itself is text lengths and image counts — about 9ms for 8 pages.
+
+The parsed blocks are then stored on the document. Without that, chunking
+and every view of the document's structure page would re-parse the file,
+which for a scanned document means OCR again: measured at 3ms from storage
+against 299ms of re-OCR for a three-page scan, and it scales with the page
+count. Documents ingested before that column existed backfill on their next
+reprocess.
+
+Where `tesseract` is not installed, everything behaves exactly as it did
+before — except that a scanned file now says OCR was unavailable rather
+than implying the file was empty.
+
+---
+
+## The Answer Cache
+
+An answer costs retrieval plus one to four model calls. Asking the same
+question again used to cost it again — 0.9s naive, 2.7s agentic, measured
+warm. Redis keeps the answer instead.
+
+Two tiers, in this order:
+
+1. **Exact**, after folding case and whitespace. One `GET`, and no
+   embedding call, so the cheap hit stays cheap: 10ms end to end against
+   24.9s for the same question cold.
+2. **Similar**, on an exact miss: the question is embedded and compared by
+   cosine against other questions *in the same scope*, hitting above
+   `cache.similarity_threshold` (default 0.95).
+
+A scope is the pipeline, `top_k` and the document restriction. Two questions
+only ever compete on similarity when all three already match — an agentic
+answer is not a naive answer to the same words, and an answer scoped to one
+document is not an answer from the library.
+
+The threshold is deliberately high, because the failure mode is a confident
+wrong answer rather than a slow one. Measured against `"how many days of
+annual leave do employees get?"`:
+
+```
+0.9878  how many annual leave days do employees get?     -> hit
+0.8670  how many sick leave days do employees get?       -> rejected
+0.8402  how many days of maternity leave do employees…    -> rejected
+0.4641  how long must a password be?                     -> rejected
+```
+
+A real rewording clears 0.95 comfortably; the nearest wrong neighbour is
+nowhere close. The cost of being conservative is that some genuine
+paraphrases miss — `"how much annual leave do employees get?"` sits at
+0.9205 and re-runs. That is the intended direction of the error.
+
+Every hit is marked on the result and shown in the UI, and a similarity hit
+also carries the question it *actually* answered. Silent reuse is the one
+way this could mislead.
+
+The latency badge reports *this* run — the lookup — with the original figure
+beside it (`2 ms vs 11.45 s`), and the cache badge carries when the answer
+was first produced. Replaying the stored latency instead had a cached answer
+claiming the eleven seconds it had just avoided.
+
+Invalidation is a flush, not arithmetic: anything that changes the index —
+upload, delete, reprocess — clears the whole namespace, because a new
+document can plausibly change any answer. `cache.ttl_seconds` is the
+backstop for what a library change cannot cover, and a web-search answer
+gets an hour instead of a day, since the public internet moves without
+anyone touching the library.
+
+Failures are swallowed. Redis being down costs one warning line and nothing
+else; the question is answered exactly as it was before any of this existed.
 
 ---
 

@@ -15,6 +15,8 @@ The UI has its own counterpart in [frontend/WORKFLOW.md](frontend/WORKFLOW.md).
 | Postgres | — | document rows and metadata |
 | Chroma | — | chunk vectors, on disk in `chroma_data/` |
 | Ollama / OpenAI | — | embeddings and generation |
+| Redis *(optional)* | `docker compose up -d` | answered questions, so a repeat is not re-answered. The only containerised part |
+| Tesseract *(optional)* | — | OCR for scanned pages, reached through PyMuPDF. A binary, not a package |
 | Phoenix *(optional)* | `uvx --python 3.12 --from arize-phoenix phoenix serve` | trace viewer. The API emits spans; it does not host the UI |
 
 There is no separate worker. Ingestion runs in a FastAPI `BackgroundTasks` thread inside the API process.
@@ -32,10 +34,17 @@ flowchart TD
     V1 --> V2[magic bytes]
     V2 --> V3[file sha256 - exact duplicate]
     V3 --> P[parse to text + blocks]
-    P --> V4[content sha256 - content duplicate]
+    P --> O{any page without a text layer?}
+    O -- no --> V4
+    O -- yes --> O1{pages needing OCR > ocr.max_pages?}
+    O1 -- yes --> X[HTTP 400, before any page is rasterised]
+    O1 -- no --> O2[OCR those pages] --> V4
+    V4[content sha256 - content duplicate]
     V4 --> S[(save file to uploads/)]
     S --> D[(INSERT document, status=UPLOADED)]
     D --> R[return HTTP response]
+    D2[blocks stored on the document, so nothing parses this file again]
+    D --> D2
     D -.background thread.-> B1
 
     B1[status = PROCESSING] --> B4[build_chunks]
@@ -55,7 +64,11 @@ Five gates, in order: file count, file size, declared MIME type, magic bytes (th
 
 **2. Parsing** — `services/parsers/parser.py`
 
-Returns a `ParsedDocument` with `.text` (joined plain text, stored in Postgres) and `.blocks` — an ordered list of `ParsedBlock`, each carrying `text`, `page_number`, and `heading_level`.
+Returns a `ParsedDocument` with `.text` (joined plain text, stored in Postgres) and `.blocks` — an ordered list of `ParsedBlock`, each carrying `text`, `page_number`, and `heading_level`. Both are stored on the document row: re-deriving the blocks was cheap when parsing meant text extraction, and stopped being cheap once it could mean OCR.
+
+**2a. OCR** — `services/parsers/ocr.py`
+
+Only where a text layer does not reach. Each page is classified from its text length and image count — skip, images-only, or whole-page — and the plan is checked against `ocr.max_pages` before any page is rasterised, because this runs inside the upload request. A page whose OCR fails keeps whatever its text layer gave it. See the README for the classification table and why the mixed case matters.
 
 Where headings come from:
 
@@ -214,6 +227,8 @@ Any combination is valid. The composition's identity is derived, not chosen from
 
 This used to be a registry of seven named pipelines, which was the wrong shape. Three retrievers combine seven ways and the agent multiplies that again; naming a handful makes the rest unreachable and implies the named ones are special.
 
+**The cache sits below smalltalk and above retrieval.** A greeting retrieved nothing, so there is nothing about it worth keeping; everything past that point is expensive enough to be worth not repeating. The key covers the question, the pipeline, `top_k` and the document scope, so an answer is only ever reused for the composition that produced it. Anything that changes the index clears the whole cache. See the README for the two tiers and the threshold that keeps a near-miss from answering the wrong question.
+
 **The agent is a layer, not an alternative.** With it on, the chosen retrievers become the tools it may plan over, plus any extras selected (`document_lookup`, `calculate`, `web_search`). It adds tool selection, evidence validation and a retry, and nothing else changes — so a with-agent against without-agent comparison varies one thing.
 
 | Family | What counts as it |
@@ -224,13 +239,16 @@ This used to be a registry of seven named pipelines, which was the wrong shape. 
 
 ### Before retrieval
 
-Three checks run first, in every pipeline.
+Four checks run first, in every pipeline.
 
 ```mermaid
 flowchart TD
     Q[question] --> SM{a bare pleasantry?}
     SM -->|yes| CANNED[canned reply, no retrieval, 0 ms]
-    SM -->|no| CONV{in a chat with prior turns?}
+    SM -->|no| CA{answered before, same scope?}
+    CA -->|exact wording| HIT[cached answer, ~10 ms]
+    CA -->|close enough wording| HIT
+    CA -->|no| CONV{in a chat with prior turns?}
     CONV -->|yes| RES[resolve: new topic or follow-up]
     CONV -->|no| AGG
     RES --> AGG{a library-wide question?}
@@ -483,4 +501,8 @@ All 25 settings and 8 prompts work the same way. Seeding advances a row that sti
 | `defaults.mode` holds something that is not a mode | logged, falls back to `hybrid` |
 | Web search unavailable or failing | returns nothing; the tool is withheld from the planner rather than offered and left to fail |
 | Phoenix collector down | swallowed. Observability that can take the service down is worse than none |
+| Redis down or absent | swallowed after one warning. Every question is answered as it was before the cache existed |
+| Tesseract not installed | scanned pages are not read, and the refusal says OCR was unavailable rather than that the file was empty |
+| OCR fails on one page | that page keeps whatever its text layer gave; the rest of the document is unaffected |
+| A scan needs more pages than `ocr.max_pages` | refused at upload with a 400 naming both numbers, before any page is rasterised |
 | Chunk-count tally fails | the document list still renders, with counts at zero |

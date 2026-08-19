@@ -88,10 +88,11 @@ Applied before or around retrieval, in every pipeline.
 | [`files/filevalidator.py`](src/port6/services/files/filevalidator.py) | 320 | The upload gates: count, size, MIME, magic bytes, exact-hash duplicate, content-hash duplicate. Saves to `uploads/` with a UUID prefix and inserts the row. |
 | [`files/magicbytevalidator.py`](src/port6/services/files/magicbytevalidator.py) | 29 | Reads the real file header. A declared `application/pdf` that does not start with `%PDF` is rejected. |
 | [`files/filehash.py`](src/port6/services/files/filehash.py) | 28 | `calculate_sha256` (bytes) and `calculate_content_sha256` (extracted text). The second catches the same document uploaded as PDF and as DOCX. |
-| [`parsers/parser.py`](src/port6/services/parsers/parser.py) | 399 | PDF / DOCX / TXT / MD → text **and** blocks, each carrying `page_number` and `heading_level`. Headings come from DOCX styles and Markdown levels where available, and from a shape heuristic otherwise. |
+| [`parsers/parser.py`](src/port6/services/parsers/parser.py) | 566 | PDF / DOCX / TXT / MD → text **and** blocks, each carrying `page_number` and `heading_level`. Headings come from DOCX styles and Markdown levels where available, and from a shape heuristic otherwise. Calls OCR for the pages a text layer does not reach, and refuses a file needing more OCR than `ocr.max_pages` before rasterising any of it. |
+| [`parsers/ocr.py`](src/port6/services/parsers/ocr.py) | 167 | Tesseract through PyMuPDF, so OCR costs a binary rather than a package. Classifies each page — skip, images-only, or whole-page — so a digital page pays nothing and a scanned figure on a digital page is still read. Every failure degrades to "no OCR" rather than failing the parse. |
 | [`structure/service.py`](src/port6/services/structure/service.py) | 152 | Walks blocks with a heading stack to build the document → section → subsection tree. Keeps heading-only sections so a child's `parent_section_id` never dangles. |
 | [`chunking/service.py`](src/port6/services/chunking/service.py) | 197 | Splits **within each section**, so a chunk never straddles two unrelated parts of a policy, and maps offsets back to page numbers. |
-| [`ingestion/service.py`](src/port6/services/ingestion/service.py) | 511 | `process_document()` — PROCESSING → chunks → embed → summarise → READY, FAILED on error with the reason recorded. Long documents are summarised map-reduce over windows so the tail is represented. Synchronous on purpose, so FastAPI runs it in a worker thread. |
+| [`ingestion/service.py`](src/port6/services/ingestion/service.py) | 558 | `process_document()` — PROCESSING → chunks → embed → summarise → READY, FAILED on error with the reason recorded. Long documents are summarised map-reduce over windows so the tail is represented. `load_blocks` reads the stored parser output rather than re-parsing, and backfills it for anything ingested before that column existed. Synchronous on purpose, so FastAPI runs it in a worker thread. |
 
 ---
 
@@ -102,11 +103,12 @@ Applied before or around retrieval, in every pipeline.
 | [`embeddings/service.py`](src/port6/services/embeddings/service.py) | 27 | `OpenAIEmbeddings` or `OllamaEmbeddings`. Imports live inside the branch so the unused provider is never required. |
 | [`llm/service.py`](src/port6/services/llm/service.py) | 30 | The same pattern for the chat model. |
 | [`llm/errors.py`](src/port6/services/llm/errors.py) | 220 | Classifies a failure as auth / quota / rate limit / unreachable / missing model / timeout / server, by exception name and message rather than by importing provider SDKs. Turns "processing failed" into "your API key expired", and says whether retrying will help. |
-| [`vector/chroma.py`](src/port6/services/vector/chroma.py) | 165 | Chroma wrapper. One shared client built under a lock — ingestion threads used to race constructing it. `count_chunks_by_document()` tallies the whole index in one pass for the document list. |
+| [`vector/chroma.py`](src/port6/services/vector/chroma.py) | 183 | Chroma wrapper. One shared client built under a lock — ingestion threads used to race constructing it. `count_chunks_by_document()` tallies the whole index in one pass for the document list. `store_chunks` and `delete_document_chunks` are the only two places the index changes, which is why cache invalidation lives in exactly those two. |
+| [`cache/service.py`](src/port6/services/cache/service.py) | 463 | The answer cache, in Redis. Exact match on normalised wording first — one `GET`, no embedding call — then cosine similarity within the same pipeline / `top_k` / document scope. Marks every hit on the result so reuse is never silent. Unreachable Redis logs once and gets out of the way. |
 | [`web/search.py`](src/port6/services/web/search.py) | 131 | Keyless DuckDuckGo search. A web chunk carries a `url` and uses `"web"` as its document id, so it can never be mistaken for a row in the documents table. Returns `[]` on failure rather than raising. |
 | [`tracing/service.py`](src/port6/services/tracing/service.py) | 100 | Phoenix spans for every model call. Emits only — the UI runs separately. Off unless `PHOENIX_ENABLED=true`, and every failure inside it is swallowed. |
 | [`db/database.py`](src/port6/services/db/database.py) | 40 | SQLAlchemy `engine`, `SessionLocal`, `Base`, and the `db_dependency` FastAPI injects. |
-| [`model/models.py`](src/port6/services/model/models.py) | 385 | `Document`, `Setting`, `Prompt`, `Chat`, `QueryRun`. |
+| [`model/models.py`](src/port6/services/model/models.py) | 403 | `Document` (including its stored `blocks`), `Setting`, `Prompt`, `Chat`, `QueryRun`. |
 | [`documents/service.py`](src/port6/services/documents/service.py) | 239 | List / get / content / summary / structure / reprocess / delete. The list attaches a chunk count from one bulk tally. |
 | [`retrieval/service.py`](src/port6/services/retrieval/service.py) | 79 | Raw retrieval behind `/search`. No LLM — used to see what the answerer is being given. |
 
@@ -116,7 +118,7 @@ Applied before or around retrieval, in every pipeline.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 573 | The shipped value for all 25 settings and 8 prompts. Each prompt is a single `template`, not a system/human pair. |
+| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 639 | The shipped value for all 32 settings and 8 prompts. Each prompt is a single `template`, not a system/human pair. |
 | [`settings/service.py`](src/port6/services/settings/service.py) | 477 | Reads and writes them, cached in process and invalidated on write. Seeding advances a row that still matches its shipped default and never touches an edited one. `_check_variables` rejects an edit that drops a placeholder the pipeline supplies — that failure would otherwise surface as a confidently wrong answer. |
 | [`history/service.py`](src/port6/services/history/service.py) | 236 | Records each answered question with its result and the pipeline that produced it, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
 | [`history/chats.py`](src/port6/services/history/chats.py) | 280 | Conversations. Starts or finds the chat a question belongs to, loads the turns a follow-up is resolved against, and rebuilds the previous turn's chunks from its stored result. |
@@ -171,9 +173,17 @@ Applied before or around retrieval, in every pipeline.
 | `tests/test_chunking.py`, `test_structure.py` | Ingestion |
 | `tests/test_errors_and_prompts.py` | Provider classification, the placeholder guard |
 | `tests/test_schemas.py`, `test_chat_cleanup.py` | Serialisation, cascade deletes |
+| `tests/test_ocr.py` | Per-page classification, the page budget, scanned and mixed PDFs, DOCX figures |
+| `tests/test_cache.py` | Both tiers, scope isolation, invalidation, and degrading when Redis is down |
 
-272 tests. The frontend has its own 17 — see
+334 tests. The frontend has its own 19 — see
 [frontend/CODEBASE.md](frontend/CODEBASE.md).
+
+`test_ocr.py` builds its fixtures rather than committing them: a binary scan
+could not be reviewed in a diff, and constructing one states exactly what
+makes it scanned. `test_cache.py` fakes Redis in about eighty lines, because
+depending on `fakeredis` would test that library's fidelity rather than this
+code's use of five commands.
 
 ---
 
@@ -190,6 +200,10 @@ Applied before or around retrieval, in every pipeline.
 | Change a prompt | `PUT /prompts/{name}` — or `settings/defaults.py` for a new shipped default |
 | Change a tuning value | `PUT /settings/{key}` — or `settings/defaults.py` to add one |
 | Support a new file type | `parsers/parser.py` + `config.yaml` `allowed_types` |
+| Change how much OCR an upload may do | `PUT /settings/ocr.max_pages` |
+| Turn OCR off, or change its resolution | `PUT /settings/ocr.enabled`, `PUT /settings/ocr.dpi` |
+| Loosen or tighten cached-question matching | `PUT /settings/cache.similarity_threshold` — 1 disables the similarity tier |
+| Turn the cache off, or move it | `PUT /settings/cache.enabled`, or `.env` `REDIS_URL` |
 | Change chunk size | `config.yaml` `chunking` |
 | Add a document field | `model/models.py` + a migration + `schemas/document.py` |
 | Change which model runs | `.env` only |
