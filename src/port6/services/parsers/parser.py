@@ -3,6 +3,11 @@
 Parsers emit an ordered list of blocks rather than one flat string, so that
 page numbers and heading structure survive into retrieval. `ParsedDocument.text`
 is still the joined plain text, which keeps existing callers working.
+
+Where a text layer does not cover the file, OCR fills the gap — see
+`ocr.py` for how a page is classified and why it is done per page. OCR runs
+inside the upload request, so it is bounded by `ocr.max_pages`: a file
+needing more than that is refused up front rather than left to time out.
 """
 
 from pathlib import Path
@@ -13,6 +18,9 @@ from pydantic import BaseModel, Field
 import pymupdf
 from bs4 import BeautifulSoup
 from docx import Document
+
+from port6.services.parsers import ocr
+from port6.services.settings.service import get_int, get_setting
 
 
 # Matches "4.", "4.2", "4.2.1" and "Section 4" style numbering.
@@ -42,11 +50,23 @@ class ParsedBlock(BaseModel):
         return self.heading_level is not None
 
 
+class OcrLimitExceeded(ValueError):
+    """More pages need OCR than the configured budget allows.
+
+    Raised before any OCR runs, so the cost of refusing is the cheap
+    classification pass and nothing more.
+    """
+
+
 class ParsedDocument(BaseModel):
     source: str
     file_type: str
     text: str
     blocks: list[ParsedBlock] = Field(default_factory=list)
+
+    # Which pages OCR actually contributed text to, 1-based. Empty for a
+    # document whose text layer covered it, which is the common case.
+    ocr_pages: list[int] = Field(default_factory=list)
 
 
 def clean_text(text: str) -> str:
@@ -214,13 +234,94 @@ def parse(path: Path) -> ParsedDocument:
     return parsers[extension](path)
 
 
+def _ocr_budget() -> tuple[bool, int, int]:
+    """`(enabled, dpi, max_units)` for this parse.
+
+    Read once per document rather than per page: these are database-backed
+    settings, and a page loop is the wrong place to be asking.
+    """
+
+    if not get_setting("ocr.enabled") or not ocr.is_available():
+        return False, 0, 0
+
+    return True, get_int("ocr.dpi"), get_int("ocr.max_pages")
+
+
+def _ocr_modes(document) -> dict[int, str]:
+    """Which pages to OCR, refusing up front if there are too many.
+
+    The budget is checked against the whole plan before a single page is
+    rasterised, which is what makes the refusal cheap — the classification
+    pass is text lengths and image counts, measured at 9ms for 8 pages.
+    """
+
+    enabled, _, max_units = _ocr_budget()
+
+    if not enabled:
+        return {}
+
+    modes = ocr.pages_to_ocr(document)
+
+    if len(modes) > max_units:
+        raise OcrLimitExceeded(
+            f"this file needs OCR on {len(modes)} of its "
+            f"{len(document)} pages, over the limit of {max_units}. "
+            "Raise the ocr.max_pages setting to accept files this large, "
+            "or split it into smaller uploads."
+        )
+
+    return modes
+
+
+def _no_pdf_text_message(path: Path) -> str:
+    """Why a PDF yielded nothing, in terms of what to do about it."""
+
+    if not get_setting("ocr.enabled"):
+        return (
+            f"No text found in PDF: {path}. It looks scanned, and OCR is "
+            "switched off — enable the ocr.enabled setting to read it."
+        )
+
+    if not ocr.is_available():
+        return (
+            f"No text found in PDF: {path}. It looks scanned, and OCR is "
+            "unavailable — install the tesseract binary to read it."
+        )
+
+    return f"No text found in PDF: {path}"
+
+
 def pdf_parser(path: Path) -> ParsedDocument:
     blocks: list[ParsedBlock] = []
+    ocr_pages: list[int] = []
 
     with pymupdf.open(path) as doc:
+
+        modes = _ocr_modes(doc)
+        _, dpi, _ = _ocr_budget()
+
         for page_index, page in enumerate(doc, start=1):
 
             text = clean_text(page.get_text())
+
+            mode = modes.get(page_index - 1)
+
+            if mode is not None:
+                recovered = clean_text(
+                    ocr.ocr_page(
+                        page,
+                        dpi=dpi,
+                        full=mode == ocr.OCR_FULL,
+                    )
+                )
+
+                # Only taken when it actually added something. On a page
+                # whose images hold no text, OCR returns the text layer
+                # back unchanged, and a failed page returns less than it —
+                # neither is a reason to discard what was already read.
+                if len(recovered) > len(text):
+                    text = recovered
+                    ocr_pages.append(page_index)
 
             if not text:
                 continue
@@ -235,14 +336,78 @@ def pdf_parser(path: Path) -> ParsedDocument:
             )
 
     if not blocks:
-        raise ValueError(f"No text found in PDF: {path}")
+        raise ValueError(_no_pdf_text_message(path))
 
     return ParsedDocument(
         source=path.name,
         file_type="pdf",
         text=blocks_to_text(blocks),
         blocks=blocks,
+        ocr_pages=ocr_pages,
     )
+
+
+def _docx_body_images(doc) -> list:
+    """Image parts the document body actually references.
+
+    `related_parts` rather than every part in the package: Word stores a
+    preview thumbnail under docProps, which is not content and OCRs to
+    nothing. The one .docx in this project has exactly that and no body
+    images, so enumerating the package would have found a thumbnail and
+    called it a figure.
+    """
+
+    return [
+        part
+        for part in doc.part.related_parts.values()
+        if part.content_type.startswith("image/")
+    ]
+
+
+def _docx_image_blocks(doc) -> list[ParsedBlock]:
+    """Text recovered from figures pasted into a DOCX.
+
+    A screenshot of a table is the common case, and without this its
+    numbers are in the file but invisible to retrieval. Labelled like the
+    tables above so a reader can tell where the text came from; no page
+    number, because DOCX has no pages.
+    """
+
+    images = _docx_body_images(doc)
+
+    if not images:
+        return []
+
+    enabled, dpi, max_units = _ocr_budget()
+
+    if not enabled:
+        return []
+
+    # The same budget as PDF pages, counted in images: it bounds how long
+    # one upload can spend in OCR, whatever the unit happens to be.
+    if len(images) > max_units:
+        raise OcrLimitExceeded(
+            f"this file has {len(images)} images to OCR, over the limit "
+            f"of {max_units}. Raise the ocr.max_pages setting to accept "
+            "files this large."
+        )
+
+    blocks = []
+
+    for number, part in enumerate(images, start=1):
+
+        text = clean_text(ocr.ocr_image_bytes(part.blob, dpi=dpi))
+
+        if not text:
+            continue
+
+        blocks.append(
+            ParsedBlock(
+                text=f"Image {number}:\n{text}",
+            )
+        )
+
+    return blocks
 
 
 def doc_parser(path: Path) -> ParsedDocument:
@@ -296,6 +461,8 @@ def doc_parser(path: Path) -> ParsedDocument:
                 text="\n".join(table_lines),
             )
         )
+
+    blocks.extend(_docx_image_blocks(doc))
 
     if not blocks:
         raise ValueError(f"No text found in DOCX: {path}")

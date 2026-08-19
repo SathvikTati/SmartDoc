@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from port6.config import upload_config
 from port6.services.model.models import Document
-from port6.services.parsers.parser import ParsedDocument, parse
+from port6.services.parsers.parser import (
+    OcrLimitExceeded,
+    ParsedDocument,
+    parse,
+)
 
 from .filehash import (
     calculate_content_sha256,
@@ -189,6 +193,21 @@ async def validate_files(
         try:
             file_content = parse(file_path)
 
+        except OcrLimitExceeded as exc:
+            file_path.unlink(
+                missing_ok=True,
+            )
+
+            # Not a parse failure — a deliberate refusal, with a limit the
+            # uploader can act on. Saying "could not parse" here would
+            # send someone looking for a corrupt file.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{filename} was not accepted: {exc}"
+                ),
+            )
+
         except Exception as e:
             file_path.unlink(
                 missing_ok=True,
@@ -265,6 +284,12 @@ async def validate_files(
             content_sha256=content_sha256,
             storage_path=str(file_path),
             content=file_content.text,
+            # Stored so nothing parses this file again. It matters most for
+            # a scanned document, where re-parsing means re-running OCR.
+            blocks=[
+                block.model_dump()
+                for block in file_content.blocks
+            ],
             status="UPLOADED",
         )
 

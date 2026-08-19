@@ -201,6 +201,70 @@ SETTING_DEFAULTS: dict[str, dict] = {
             "the library is an explicit choice."
         ),
     },
+    "ocr.enabled": {
+        "value": True,
+        "description": (
+            "Read scanned pages with OCR when a text layer does not cover "
+            "them. On by default: without it a scanned file is refused as "
+            "empty, which reads as a fault rather than a choice. Needs the "
+            "tesseract binary — where that is missing, parsing behaves as "
+            "though this were off."
+        ),
+    },
+    "ocr.max_pages": {
+        "value": 20,
+        "description": (
+            "Most pages one upload may OCR. OCR runs inside the upload "
+            "request, so this is what stops a large scan from outliving "
+            "the browser's patience; a file needing more is refused up "
+            "front, before any page is rasterised. Counted in images for "
+            "a DOCX, which has no pages."
+        ),
+    },
+    "ocr.dpi": {
+        "value": 200,
+        "description": (
+            "Resolution pages are rasterised at before OCR. Higher reads "
+            "small print more reliably and costs time; lower can miss a "
+            "low-resolution figure entirely rather than reading it badly."
+        ),
+    },
+    "cache.enabled": {
+        "value": True,
+        "description": (
+            "Answer a question from the cache when the same one has been "
+            "asked before. Cleared whenever a document is added, deleted "
+            "or reprocessed, so a cached answer cannot outlive the "
+            "documents it was drawn from."
+        ),
+    },
+    "cache.ttl_seconds": {
+        "value": 86400,
+        "description": (
+            "How long a cached answer stays valid. Library changes clear "
+            "the cache outright, so this is the backstop for everything "
+            "that changes without one — an edited prompt, a different "
+            "model, or a web result that has since moved on."
+        ),
+    },
+    "cache.similarity_threshold": {
+        "value": 0.95,
+        "description": (
+            "How close a differently-worded question must be to reuse a "
+            "cached answer, as cosine similarity. Deliberately high: "
+            "\"sick leave days\" and \"annual leave days\" are near "
+            "neighbours, and answering one with the other would be "
+            "confident and wrong. Set to 1 to require exact wording."
+        ),
+    },
+    "cache.max_candidates": {
+        "value": 500,
+        "description": (
+            "Most cached questions compared against per scope when looking "
+            "for a close match. Bounds the work a miss can do; the oldest "
+            "entries drop out of the comparison set beyond this."
+        ),
+    },
     "history.retain_runs": {
         "value": 500,
         "description": (

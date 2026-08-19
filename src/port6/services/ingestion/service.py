@@ -175,12 +175,32 @@ def record_attempt(
 def load_blocks(
     document: Document,
 ) -> list[ParsedBlock]:
-    """Re-parse the stored file to recover headings and page numbers.
+    """The document's headings and page numbers.
 
-    Only the plain text is kept in the database, so the structure has to come
-    from the file. If it is gone, ingestion still works — the document is
-    simply treated as one unstructured section.
+    Read from the stored parser output where there is any, because parsing
+    is not always cheap: a scanned document was OCR'd to produce these, and
+    re-deriving them would mean OCR'ing it again — once per chunking run,
+    and once more every time the structure page is opened.
+
+    Falling back to re-parsing keeps every document ingested before that
+    column existed working. If the file is gone too, ingestion still works
+    — the document is simply treated as one unstructured section.
     """
+
+    stored = document.blocks
+
+    if stored:
+        try:
+            return [ParsedBlock(**block) for block in stored]
+
+        except Exception as exc:
+            # A block shape from an older release should not cost the
+            # document its structure; re-parsing below still can.
+            logger.warning(
+                "Stored blocks for %s could not be read (%s); re-parsing",
+                document.filename,
+                exc,
+            )
 
     storage_path = Path(document.storage_path)
 
@@ -213,11 +233,38 @@ def build_chunks(
     try:
         document = _load_document(db, document_id)
 
+        blocks = load_blocks(document)
+
+        # Backfill, so this is the last time this file is parsed. Upload
+        # stores the blocks, but reprocessing did not, which left a
+        # reprocessed document re-parsing — and therefore re-OCRing — on
+        # every view of its structure. It also fills in every document
+        # ingested before the column existed, on its next run through here.
+        if blocks and not document.blocks:
+            try:
+                document.blocks = [
+                    block.model_dump() for block in blocks
+                ]
+                db.commit()
+
+                logger.info(
+                    "Stored parsed structure for document %s",
+                    document_id,
+                )
+
+            except Exception as exc:
+                db.rollback()
+                logger.warning(
+                    "Could not store parsed structure for %s: %s",
+                    document_id,
+                    exc,
+                )
+
         chunks = chunk_document(
             document_id=str(document.id),
             filename=document.filename,
             content=document.content,
-            blocks=load_blocks(document),
+            blocks=blocks,
         )
 
         logger.info(
