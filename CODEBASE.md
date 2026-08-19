@@ -45,8 +45,8 @@ port6/
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`src/port6/main.py`](src/port6/main.py) | 646 | FastAPI app and every endpoint. Documents, `/search`, `/ask`, `/ask/compare`, `/pipelines`, `/chats`, `/history`, `/settings`, `/prompts`. Upload hands ingestion to `BackgroundTasks`; `/ask` resolves a pipeline, then delegates to `rag.system.query_in_chat`. Starts Phoenix tracing in the lifespan, before the first chain is built. |
-| [`src/port6/config.py`](src/port6/config.py) | 267 | Loads `config.yaml` and `.env`. Resolves `LLM_PROVIDER` / `EMBEDDINGS_PROVIDER`, requires `OPENAI_API_KEY` only when OpenAI is selected, and namespaces the Chroma collection per embedding model so two embedders never share vectors. |
+| [`src/port6/main.py`](src/port6/main.py) | 664 | FastAPI app and every endpoint. Documents, `/search`, `/ask`, `/ask/compare`, `/pipelines`, `/chats`, `/history`, `/settings`, `/prompts`. Upload hands ingestion to `BackgroundTasks`; `/ask` resolves a pipeline, then delegates to `rag.system.query_in_chat`. Starts Phoenix tracing in the lifespan, before the first chain is built. |
+| [`src/port6/config.py`](src/port6/config.py) | 295 | Loads `config.yaml` and `.env`. Resolves `LLM_PROVIDER` / `EMBEDDINGS_PROVIDER`, requires `OPENAI_API_KEY` only when OpenAI is selected, and namespaces the Chroma collection per embedding model so two embedders never share vectors. |
 
 ---
 
@@ -57,14 +57,14 @@ retrievers; `RagMode` is the coarse family it belongs to.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`rag/pipelines.py`](src/port6/services/rag/pipelines.py) | 560 | **The composition, and the runner.** A `Composition` is a set of retrievers plus an optional agent and its tools — not a fixed registry, because three retrievers combine seven ways and naming a handful makes the rest unreachable. `allowed_tools` is what stops the agent widening retrieval. `resolve()` decides what answers a request: an explicit composition, else the mode's historical equivalent, else `defaults.mode`. Presets are shortcuts. |
-| [`rag/system.py`](src/port6/services/rag/system.py) | 405 | **The public entry point.** `query()` and `query_in_chat()`. Short-circuits small talk before retrieval, resolves the pipeline, and turns a pipeline failure into a `RagResult` carrying the error rather than raising — so a comparison still renders the others. |
+| [`rag/pipelines.py`](src/port6/services/rag/pipelines.py) | 660 | **The composition, and the runner.** A `Composition` is a set of retrievers plus an optional agent and its tools — not a fixed registry, because three retrievers combine seven ways and naming a handful makes the rest unreachable. `allowed_tools` is what stops the agent widening retrieval. `resolve()` decides what answers a request: an explicit composition, else the mode's historical equivalent, else `defaults.mode`. Presets are shortcuts. |
+| [`rag/system.py`](src/port6/services/rag/system.py) | 555 | **The public entry point.** `query()` and `query_in_chat()`. Short-circuits small talk before retrieval, resolves the pipeline, and turns a pipeline failure into a `RagResult` carrying the error rather than raising — so a comparison still renders the others. |
 | [`rag/base.py`](src/port6/services/rag/base.py) | 133 | The shared contract. `RagMode`, `RetrievedChunk` (content, provenance, which retriever found it, `url` for web, `uploaded_at` for recency, `derived_from` for a calculation's sources) and `RagResult`. |
 | [`rag/retrievers.py`](src/port6/services/rag/retrievers.py) | 452 | The primitives. `semantic_search()` over Chroma, `KeywordIndex` (BM25, cached and rebuilt when the collection size changes, thread-safe) and `fuse()` — Reciprocal Rank Fusion, because a Chroma distance and a BM25 score are not comparable but their ranks are. |
 | [`rag/hierarchical.py`](src/port6/services/rag/hierarchical.py) | 348 | Progressive narrowing. Ranks documents from Postgres without touching the chunk index, then searches only inside them, then only inside the chosen sections. |
-| [`rag/agent.py`](src/port6/services/rag/agent.py) | 738 | The LangGraph state machine: plan → execute → validate → build context → answer, with a retry edge back to the planner and a one-shot web fallback. A composition with `planner: false` turns off the planner call and the retry, so the cost of planning is measurable. `allowed_tools` restricts what the graph may reach for, so turning the agent on never widens retrieval. |
-| [`rag/tools.py`](src/port6/services/rag/tools.py) | 400 | Eight tools, each a LangChain `@tool` so its name, description and schema have one definition. Selected by prompt rather than function calling — the local model emits its choice as JSON content and leaves `tool_calls` empty. `available_tools(allowed)` applies two gates: the server's setting, and the composition's allow-list. |
-| [`rag/generation.py`](src/port6/services/rag/generation.py) | 394 | Shared by every pipeline. Builds numbered sources, labels web and calculation sources distinctly, resolves `[n]` markers back to chunks, drops hallucinated numbers, handles `NOT_FOUND`, retries a citation-only answer once, and rewrites a bare topic into a question before generating. |
+| [`rag/agent.py`](src/port6/services/rag/agent.py) | 837 | The LangGraph state machine: plan → execute → validate → build context → answer, with a retry edge back to the planner and a one-shot web fallback. A composition with `planner: false` turns off the planner call and the retry, so the cost of planning is measurable. `allowed_tools` restricts what the graph may reach for, so turning the agent on never widens retrieval. |
+| [`rag/tools.py`](src/port6/services/rag/tools.py) | 424 | Eight tools, each a LangChain `@tool` so its name, description and schema have one definition. Selected by prompt rather than function calling — the local model emits its choice as JSON content and leaves `tool_calls` empty. `available_tools(allowed)` applies two gates: the server's setting, and the composition's allow-list. |
+| [`rag/generation.py`](src/port6/services/rag/generation.py) | 456 | Shared by every pipeline. Builds numbered sources, labels web and calculation sources distinctly, resolves `[n]` markers back to chunks, drops hallucinated numbers, handles `NOT_FOUND`, retries a citation-only answer once, and rewrites a bare topic into a question before generating. |
 | [`rag/validation.py`](src/port6/services/rag/validation.py) | 196 | Evidence validation in three bands: reject below `validation.min_overlap`, accept above `validation.skip_model_above` without a model call, ask the model only in between. Scores content words, not the scaffolding of the question. |
 
 ### Question shaping
@@ -74,8 +74,8 @@ Applied before or around retrieval, in every pipeline.
 | File | Lines | What it does |
 |---|---:|---|
 | [`rag/smalltalk.py`](src/port6/services/rag/smalltalk.py) | 371 | Greetings, thanks, farewells and "what can you do?" answered directly, with no retrieval and no model call. Matching is exact after normalisation, so "hi, how much annual leave?" is treated as the question it is. |
-| [`rag/conversation.py`](src/port6/services/rag/conversation.py) | 320 | Decides whether a question continues the conversation or starts a new topic, rewrites a follow-up to stand alone, and picks `fresh` / `combine` / `reuse`. Rules first, so most questions cost no model call, and both the rules and the fallback are biased toward ignoring prior context. |
-| [`rag/aggregation.py`](src/port6/services/rag/aggregation.py) | 316 | Cross-document questions. Detects them, separates the topic from the asking-about-the-library scaffolding, retrieves for coverage rather than depth, and groups the context by document with each excerpt clipped. |
+| [`rag/conversation.py`](src/port6/services/rag/conversation.py) | 371 | Decides whether a question continues the conversation or starts a new topic, rewrites a follow-up to stand alone, and picks `fresh` / `combine` / `reuse`. Rules first, so most questions cost no model call, and both the rules and the fallback are biased toward ignoring prior context. |
+| [`rag/aggregation.py`](src/port6/services/rag/aggregation.py) | 420 | Cross-document questions. Detects them, separates the topic from the asking-about-the-library scaffolding, retrieves for coverage rather than depth, and groups the context by document with each excerpt clipped. |
 | [`rag/calculator.py`](src/port6/services/rag/calculator.py) | 488 | Arithmetic, evaluated by walking an AST against an allow-list — never `eval`, because the expression is written by a model. Runs *after* retrieval so a formula living in a document is applied rather than guessed, records which chunks its figures came from, and rejects a bare literal as the model having done the sum itself. |
 | [`rag/conflict.py`](src/port6/services/rag/conflict.py) | 308 | Two documents giving different figures for the same thing. Resolves by upload recency and reports what the older one said, because nothing in a file states that it supersedes another. |
 
@@ -85,7 +85,7 @@ Applied before or around retrieval, in every pipeline.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`files/filevalidator.py`](src/port6/services/files/filevalidator.py) | 320 | The upload gates: count, size, MIME, magic bytes, exact-hash duplicate, content-hash duplicate. Saves to `uploads/` with a UUID prefix and inserts the row. |
+| [`files/filevalidator.py`](src/port6/services/files/filevalidator.py) | 345 | The upload gates: count, size, MIME, magic bytes, exact-hash duplicate, content-hash duplicate. Saves to `uploads/` with a UUID prefix and inserts the row. |
 | [`files/magicbytevalidator.py`](src/port6/services/files/magicbytevalidator.py) | 29 | Reads the real file header. A declared `application/pdf` that does not start with `%PDF` is rejected. |
 | [`files/filehash.py`](src/port6/services/files/filehash.py) | 28 | `calculate_sha256` (bytes) and `calculate_content_sha256` (extracted text). The second catches the same document uploaded as PDF and as DOCX. |
 | [`parsers/parser.py`](src/port6/services/parsers/parser.py) | 566 | PDF / DOCX / TXT / MD → text **and** blocks, each carrying `page_number` and `heading_level`. Headings come from DOCX styles and Markdown levels where available, and from a shape heuristic otherwise. Calls OCR for the pages a text layer does not reach, and refuses a file needing more OCR than `ocr.max_pages` before rasterising any of it. |
@@ -101,10 +101,10 @@ Applied before or around retrieval, in every pipeline.
 | File | Lines | What it does |
 |---|---:|---|
 | [`embeddings/service.py`](src/port6/services/embeddings/service.py) | 27 | `OpenAIEmbeddings` or `OllamaEmbeddings`. Imports live inside the branch so the unused provider is never required. |
-| [`llm/service.py`](src/port6/services/llm/service.py) | 30 | The same pattern for the chat model. |
+| [`llm/service.py`](src/port6/services/llm/service.py) | 36 | The same pattern for the chat model. |
 | [`llm/errors.py`](src/port6/services/llm/errors.py) | 220 | Classifies a failure as auth / quota / rate limit / unreachable / missing model / timeout / server, by exception name and message rather than by importing provider SDKs. Turns "processing failed" into "your API key expired", and says whether retrying will help. |
 | [`vector/chroma.py`](src/port6/services/vector/chroma.py) | 183 | Chroma wrapper. One shared client built under a lock — ingestion threads used to race constructing it. `count_chunks_by_document()` tallies the whole index in one pass for the document list. `store_chunks` and `delete_document_chunks` are the only two places the index changes, which is why cache invalidation lives in exactly those two. |
-| [`cache/service.py`](src/port6/services/cache/service.py) | 463 | The answer cache, in Redis. Exact match on normalised wording first — one `GET`, no embedding call — then cosine similarity within the same pipeline / `top_k` / document scope. Marks every hit on the result so reuse is never silent. Unreachable Redis logs once and gets out of the way. |
+| [`cache/service.py`](src/port6/services/cache/service.py) | 474 | The answer cache, in Redis. Exact match on normalised wording first — one `GET`, no embedding call — then cosine similarity within the same pipeline / `top_k` / document scope. Marks every hit on the result so reuse is never silent. Unreachable Redis logs once and gets out of the way. |
 | [`web/search.py`](src/port6/services/web/search.py) | 131 | Keyless DuckDuckGo search. A web chunk carries a `url` and uses `"web"` as its document id, so it can never be mistaken for a row in the documents table. Returns `[]` on failure rather than raising. |
 | [`tracing/service.py`](src/port6/services/tracing/service.py) | 100 | Phoenix spans for every model call. Emits only — the UI runs separately. Off unless `PHOENIX_ENABLED=true`, and every failure inside it is swallowed. |
 | [`db/database.py`](src/port6/services/db/database.py) | 40 | SQLAlchemy `engine`, `SessionLocal`, `Base`, and the `db_dependency` FastAPI injects. |
@@ -118,10 +118,10 @@ Applied before or around retrieval, in every pipeline.
 
 | File | Lines | What it does |
 |---|---:|---|
-| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 639 | The shipped value for all 32 settings and 8 prompts. Each prompt is a single `template`, not a system/human pair. |
+| [`settings/defaults.py`](src/port6/services/settings/defaults.py) | 686 | The shipped value for all 33 settings and 8 prompts. Each prompt is a single `template`, not a system/human pair. |
 | [`settings/service.py`](src/port6/services/settings/service.py) | 477 | Reads and writes them, cached in process and invalidated on write. Seeding advances a row that still matches its shipped default and never touches an edited one. `_check_variables` rejects an edit that drops a placeholder the pipeline supplies — that failure would otherwise surface as a confidently wrong answer. |
-| [`history/service.py`](src/port6/services/history/service.py) | 236 | Records each answered question with its result and the pipeline that produced it, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
-| [`history/chats.py`](src/port6/services/history/chats.py) | 280 | Conversations. Starts or finds the chat a question belongs to, loads the turns a follow-up is resolved against, and rebuilds the previous turn's chunks from its stored result. |
+| [`history/service.py`](src/port6/services/history/service.py) | 241 | Records each answered question with its result and the pipeline that produced it, and trims beyond `history.retain_runs`. Best-effort: a history write never turns a successful answer into an error. |
+| [`history/chats.py`](src/port6/services/history/chats.py) | 319 | Conversations. Starts or finds the chat a question belongs to, loads the turns a follow-up is resolved against, and rebuilds reusable chunks from the last turn that *answered* — not merely the last turn, whose sources may be the ones that answered nothing. |
 
 ---
 
@@ -130,8 +130,8 @@ Applied before or around retrieval, in every pipeline.
 | File | Lines | Contents |
 |---|---:|---|
 | [`schemas/document.py`](src/port6/services/schemas/document.py) | 93 | `DocumentResponse` (with `chunk_count`), content, summary and structure responses |
-| [`schemas/query.py`](src/port6/services/schemas/query.py) | 103 | `AskRequest` (question, **pipeline**, mode, top_k, document_ids, chat_id), `CompareRequest` (modes **or** pipelines), `CompareResponse` |
-| [`schemas/admin.py`](src/port6/services/schemas/admin.py) | 126 | `PipelineResponse`, `SettingResponse`, `PromptResponse`, `QueryRunDetail`, `ChatSummary`, `ChatDetail` |
+| [`schemas/query.py`](src/port6/services/schemas/query.py) | 131 | `AskRequest` (question, **pipeline**, mode, top_k, document_ids, chat_id), `CompareRequest` (modes **or** pipelines), `CompareResponse` |
+| [`schemas/admin.py`](src/port6/services/schemas/admin.py) | 152 | `PipelineResponse`, `SettingResponse`, `PromptResponse`, `QueryRunDetail`, `ChatSummary`, `ChatDetail` |
 | [`schemas/search.py`](src/port6/services/schemas/search.py) | 64 | `SearchRequest`, `SearchResult`, `SearchResponse` |
 | [`schemas/common.py`](src/port6/services/schemas/common.py) | 34 | `UtcDatetime` — serialises naive UTC with a zone, so a browser does not read it as local time |
 
@@ -165,7 +165,7 @@ Applied before or around retrieval, in every pipeline.
 | `tests/test_pipelines.py` | The registry, mode compatibility, resolution, ranking |
 | `tests/test_retrieval.py` | Fusion, scoping, topic-to-question rewriting |
 | `tests/test_aggregation.py` | Detection, coverage, the grouped context |
-| `tests/test_conversation.py` | Follow-up resolution and topic switches |
+| `tests/test_conversation.py` | Follow-up resolution and topic switches, what a short or corrective question is allowed to inherit, and what carried context reaches the model |
 | `tests/test_conflict.py` | Disagreeing documents and recency |
 | `tests/test_calculator.py` | The AST sandbox, the gate, provenance |
 | `tests/test_smalltalk.py` | What must and must not short-circuit |
@@ -175,8 +175,9 @@ Applied before or around retrieval, in every pipeline.
 | `tests/test_schemas.py`, `test_chat_cleanup.py` | Serialisation, cascade deletes |
 | `tests/test_ocr.py` | Per-page classification, the page budget, scanned and mixed PDFs, DOCX figures |
 | `tests/test_cache.py` | Both tiers, scope isolation, invalidation, and degrading when Redis is down |
+| `tests/test_context_budget.py` | Which sources survive a window too small for them, and that it is the weakest |
 
-340 tests. The frontend has its own 19 — see
+368 tests. The frontend has its own 19 — see
 [frontend/CODEBASE.md](frontend/CODEBASE.md).
 
 `test_ocr.py` builds its fixtures rather than committing them: a binary scan
@@ -208,4 +209,5 @@ code's use of five commands.
 | Change chunk size | `config.yaml` `chunking` |
 | Add a document field | `model/models.py` + a migration + `schemas/document.py` |
 | Change which model runs | `.env` only |
+| Change the context window | `.env` `OLLAMA_NUM_CTX` — the trim budget follows it |
 | Turn on tracing | `.env` `PHOENIX_ENABLED=true` |

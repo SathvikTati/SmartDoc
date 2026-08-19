@@ -101,6 +101,78 @@ Provider choice is deliberately *not* runtime-tunable: switching embedding
 models changes the vector dimension and therefore the Chroma collection, so
 it means re-ingesting.
 
+### Answering against a limit
+
+"Can I take 50 sick leaves?" used to come back "not in the documents",
+even though the sick-leave section was retrieved first and states a
+12-day entitlement. The model read the absence of the figure *asked
+about* as the absence of an answer.
+
+Rules did not shift it — a long rule made it worse, and a rule naming the
+exact case had no effect. A worked example got it answering, but wrongly:
+*"can I take upto 15 paid sick leave per year?"* came back **"Yes … 15 is
+within the entitlement"** against a 12-day limit, and the boundary scored
+only 16/20 with no pattern (13 no, 15 **yes**, 18 no, 20 **yes**, 25 no).
+
+The cause was not the model's arithmetic. Asked plainly — *"Is 15 more
+than 12?"*, or the same question against the same single source with a
+four-line prompt — it answers correctly every time. It was the example.
+One example of a single polarity taught the *sentence*, and the verdict
+slot was filled without the comparison ever being made:
+
+```
+example:  "No.  Employees receive 12 days … so 30 is beyond the entitlement."
+output:   "Yes. Employees receive 12 days … so 15 is within the entitlement."
+```
+
+The fix is to make the comparison a step of its own, so it cannot be
+skipped:
+
+```
+- When a question asks about a figure, find the limit the sources
+  state and write the comparison out before the verdict.
+  Question: "can I take 30 sick leaves?"
+  Answer: "The entitlement is 12 days per year [1]. 30 is greater
+  than 12, so no."
+```
+
+The sick-leave boundary went from 16/20 to **8/8** across 5→50 days, caps
+included, with all genuine refusals kept — 30/32 overall.
+
+The two remaining misses are **retrieval distractors, not reasoning**. For
+*"can I take 6 months unpaid leave?"* against a 3-month cap, the same
+prompt gives three different answers depending only on what was retrieved:
+
+```
+5 chunks, one of them "Stage one is a written warning, live for 6 months"
+   -> "Yes, you can take 6 months"                        wrong
+4 chunks, that one removed
+   -> "Taking 6 months exceeds this limit, so no"          right
+1 chunk, the unpaid-leave cap alone
+   -> "6 months is greater than 3 months, so no"           right
+```
+
+A distractor carrying the literal figure asked about is what flips it.
+That is a retrieval problem — the chunk is a plausible neighbour for a
+question about months — and worth treating as one rather than as
+something more prompting will fix.
+
+---
+
+`OLLAMA_NUM_CTX` (8192) is pinned for a reason worth knowing. Left to
+itself, Ollama sizes the context window from whatever memory is free when
+it loads a model — 2048 tokens on a busy machine, 4096 on a quiet one — and
+an overflowing prompt is not refused. `llama.cpp` shifts the oldest tokens
+out, which is the *front* of the prompt: the highest-ranked source, the one
+most likely to hold the answer. The model then answers from the remainder
+with no sign anything went missing.
+
+Measured on the sample library at `top_k=16` against a 2048-token window:
+four answers out of four, none of them correct. The same question against
+8192 was correct four out of four. Two things now prevent it — the window
+is stated rather than inherited, and `fit_to_context` drops the
+*lowest*-ranked sources when they will not fit, logging what it dropped.
+
 Prompts are seeded from the code defaults on startup and only ever inserted,
 so an edit survives a restart. An edit that drops a placeholder the pipeline
 supplies — `{context}`, `{query}` — is rejected with a 422, because that
@@ -124,12 +196,14 @@ curl -X POST http://localhost:8000/prompts/answer_generation/reset
 uv run pytest
 ```
 
-340 tests over the pure logic the pipeline turns on: heading detection and
+368 tests over the pure logic the pipeline turns on: heading detection and
 the section tree, chunk boundaries and the page a chunk is cited with, RRF
 fusion, citation extraction and hallucination-dropping, evidence overlap,
 provider-failure classification, the prompt-edit guard, per-page OCR
-classification and its page budget, and both tiers of the answer cache with
-the guards that keep a near-miss from answering the wrong question.
+classification and its page budget, both tiers of the answer cache with the
+guards that keep a near-miss from answering the wrong question, which
+sources survive a context window too small for them, and what a follow-up is
+allowed to inherit from the turn before it.
 
 ---
 

@@ -140,6 +140,76 @@ Every question belongs to a chat. One is created if none is given, and its
 id comes back in `metadata.chat_id`, so a caller never has to decide up
 front that it wanted a conversation.
 
+Four things about this are worth stating, because each was wrong and each
+produced a confident "not in the library" for something already answered.
+
+**The cheap gate errs towards asking.** Before the classifier runs, a
+question carrying no dependent signal is treated as a new topic — no model
+call. That was described as failing safe, on the grounds that the worst
+case is ignoring context. It is not safe: a question that needed context
+and did not get it reports the library empty, which reads as a missing
+document rather than a misread question.
+
+The gate was a list of *shapes* — pronouns, "what about", bare
+interrogatives — and questions kept arriving in shapes nobody had listed:
+*"total how many?"*, *"same for annual?"*, *"for annual leave?"*,
+*"no the anual leaves"*. So two broader signals were added. **Four words or
+fewer** is dependent whatever the words are, because four words cannot
+carry a subject, a scope and a question at once; and **corrective openers**
+— "no …", "not …", "actually …", "i meant …" — are follow-ups by
+definition. Of a dozen genuinely self-contained questions only three cross
+the length rule, and crossing it costs a model call rather than a wrong
+answer: the classifier replies "new_topic" and the question is searched as
+written anyway.
+
+Library-wide questions are exempt, however short: they name their own
+scope.
+
+**Carried context reaches the model.** `combine` searches the rewritten
+question and adds a few chunks from the previous turn. That merge used to
+run on the finished result, after generation — so the chunks were
+decoration. A follow-up asking to compare something against a figure the
+previous turn had found on the web could not see it, answered "not in the
+library", and then listed those chunks as retrieved-but-unused. Unused
+because nothing had read them. They are now handed to retrieval, and in
+the agent they join the context *after* the top-k trim, since they arrive
+without a fused rank and would otherwise be the first thing discarded.
+
+An answer built on carried context is never cached: it depends on the
+conversation that produced it, and the cache key describes only the
+question, the pipeline and the library.
+
+**Reuse falls back to retrieving.** Answering from the previous turn's
+sources without retrieving is a bet that those sources cover the new
+question too. When the bet is lost the turn used to fail outright — "how
+many leaves?" after a turn whose chunks happened to miss the entitlement
+section reported the library empty, while retrieving on the rewritten
+question finds "22 days" first time. Worse, when the stale sources *did*
+contain a number it answered with the wrong one: 12 days of sick leave for
+a question about annual leave. The strategy is also chosen more carefully
+now — a worked example teaches that a question asking for a figure needs
+retrieval, not a restatement.
+
+**Reuse takes the last turn that answered**, not the last turn. Retrieval
+always returns its nearest neighbours, so a turn that answered nothing
+still stored chunks; reusing those guarantees the next turn answers
+nothing either. That is how one misread follow-up became two failures — the
+second for a completely different reason than the first.
+
+The classifier itself is steered by worked examples rather than rules,
+which is what this model responds to: resolve a repeated question against
+the *newest* turn, and treat a correction as a follow-up. Those examples
+deliberately use travel and expenses rather than leave — a first attempt
+used leave, and the model emitted the example's rewritten question verbatim
+for a different question, which is the same copying failure the answer
+prompt showed.
+
+**Known limitation.** A question repeating the exact words of an earlier
+turn — "will they carry" asked once about sick leave and again about annual
+leave — still resolves against the wrong turn some of the time. It is
+correct in isolated tests and varies in live runs, so it is a reliability
+gap in the classifier rather than a missing rule.
+
 A question that arrives in a chat is first *resolved* against the turns
 before it, because some questions are not searchable as written:
 
@@ -488,7 +558,7 @@ A **mode**, not a pipeline. A chat picks between the three families; picking bet
 
 They live in Postgres, not in the browser. A default held in `localStorage` would be a different default on a colleague's machine, would vanish on a cache clear, and would not apply to a question asked over the API. Editable from the header dialog or `PUT /settings/{key}`, and live on the next request — the settings cache is invalidated on write, so no restart.
 
-All 25 settings and 8 prompts work the same way. Seeding advances a row that still matches its shipped default and never touches one that has been edited, so a release can improve a prompt without overwriting your changes.
+All 33 settings and 8 prompts work the same way. Seeding advances a row that still matches its shipped default and never touches one that has been edited, so a release can improve a prompt without overwriting your changes.
 
 ---
 
@@ -512,4 +582,7 @@ All 25 settings and 8 prompts work the same way. Seeding advances a row that sti
 | Tesseract not installed | scanned pages are not read, and the refusal says OCR was unavailable rather than that the file was empty |
 | OCR fails on one page | that page keeps whatever its text layer gave; the rest of the document is unaffected |
 | A scan needs more pages than `ocr.max_pages` | refused at upload with a 400 naming both numbers, before any page is rasterised |
+| A question naming a figure the sources do not mention | answered from the limit they do state. The prompt makes the comparison its own step — a single worked example taught the sentence shape and let the verdict be filled in without comparing, which answered "yes" to 15 days against a 12-day limit |
+| A retrieved chunk carrying the same figure the question asks about | can still flip the verdict; a distractor mentioning "6 months" turned a correct "no" into "yes". A retrieval problem, not a prompting one |
+| More sources than the context window fits | the lowest-ranked are dropped and logged, rather than the model silently truncating the highest |
 | Chunk-count tally fails | the document list still renders, with counts at zero |
