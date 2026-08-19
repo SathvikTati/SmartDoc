@@ -283,10 +283,18 @@ PRESETS: dict[str, Composition] = {
     "semantic": Composition(retrievers=(SEMANTIC,)),
     "keyword": Composition(retrievers=(KEYWORD,)),
     "hybrid": Composition(retrievers=(SEMANTIC, KEYWORD, HIERARCHICAL)),
+    # `web_search` is offered here, not withheld: without it the Ask
+    # page — the only surface that reaches this preset — could never use
+    # the web, so switching `web.enabled` on had no observable effect and
+    # the agent declined questions the internet answers. Asking is safe
+    # because the setting still decides: `_is_offered` drops the tool
+    # from the catalogue while `web.enabled` is false, which is the
+    # default, so the library-only promise holds unless it is opted out
+    # of deliberately.
     "agentic": Composition(
         retrievers=(SEMANTIC, KEYWORD, HIERARCHICAL),
         agent=True,
-        extra_tools=("document_lookup", "calculate"),
+        extra_tools=("document_lookup", "calculate", "web_search"),
     ),
 }
 
