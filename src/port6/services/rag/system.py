@@ -149,6 +149,7 @@ async def query(
     top_k: int = 5,
     document_ids: list[str] | None = None,
     composition=None,
+    use_cache: bool = True,
 ) -> RagResult:
     """Answer a question, optionally restricted to specific documents.
 
@@ -159,6 +160,10 @@ async def query(
     whether an agent sits on them. `mode` is the coarser control a chat
     uses, and still works — it maps to the composition reproducing what
     that mode used to do.
+
+    `use_cache=False` runs the pipeline for real and stores nothing.
+    Comparison passes it: the point there is to watch the strategies work,
+    and a cached arm would report someone else's latency.
     """
 
     if not question or not question.strip():
@@ -182,7 +187,7 @@ async def query(
     # there is nothing about it worth keeping.
     scope = answer_cache.scope_digest(selected.id, top_k, document_ids)
 
-    caching = answer_cache.enabled()
+    caching = use_cache and answer_cache.enabled()
     embedding = None
 
     if caching:
@@ -316,11 +321,16 @@ async def compare_modes(
 
         key = one.id if compositions else one.family.value
 
+        # Never cached. Comparison exists to watch the strategies run
+        # against each other on the same question, and an arm answered
+        # from cache would report a lookup instead of its own work —
+        # making whichever pipeline had been asked before look fastest.
         results[key] = await query(
             question,
             top_k=top_k,
             document_ids=document_ids,
             composition=one,
+            use_cache=False,
         )
 
     return results
