@@ -265,6 +265,18 @@ SETTING_DEFAULTS: dict[str, dict] = {
             "entries drop out of the comparison set beyond this."
         ),
     },
+    "web.max_topic_distance": {
+        "value": 1.05,
+        "description": (
+            "How far the nearest document may be before a question counts "
+            "as nothing to do with the library, as embedding distance. "
+            "Past it the web is not consulted at all: if no document is "
+            "even close to the question, there is nothing for the web to "
+            "supplement, and answering anyway turns a document assistant "
+            "into a search engine. Measured on the sample library: real "
+            "questions land at 0.86-0.89, \"what is python\" at 1.26."
+        ),
+    },
     "history.retain_runs": {
         "value": 500,
         "description": (

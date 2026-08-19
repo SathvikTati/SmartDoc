@@ -47,7 +47,7 @@ from port6.services.rag.tools import (
     tool_catalogue,
 )
 from port6.services.rag.validation import validate_evidence
-from port6.services.settings.service import get_int, get_prompt
+from port6.services.settings.service import get_float, get_int, get_prompt
 
 
 logger = logging.getLogger(__name__)
@@ -647,9 +647,57 @@ def route_after_answer(state: AgentState) -> str:
     if "web_search" not in available_tools(state.get("allowed_tools")):
         return END
 
+    if not library_is_on_topic(state):
+        logger.info(
+            "Nothing in the library is close to %r; not reaching the web",
+            state.get("query"),
+        )
+        return END
+
     logger.info("Documents did not answer; falling back to the web")
 
     return "retrieval_planner"
+
+
+def library_is_on_topic(state) -> bool:
+    """Whether anything in the library is even about this question.
+
+    Retrieval always returns its nearest neighbours, so "found five
+    chunks" says nothing about whether the subject exists in the library
+    at all. Distance does: on the sample library, real questions put the
+    nearest document at 0.86-0.89, while "what is python" sits at 1.26 and
+    "what is redis" at 1.13.
+
+    This is what separates a gap from a non-subject. "UK statutory
+    maternity leave" is a gap — the library is full of leave policy and
+    simply lacks that figure, so the web supplements it. "What is python"
+    is not a gap; nothing in the library is remotely about it, and
+    answering from the web would quietly turn a document assistant into a
+    search engine.
+    """
+
+    chunks = state.get("final_context") or []
+
+    # Only chunks semantic search actually found. `score` is whatever the
+    # retriever that produced it puts there, and a keyword-only chunk
+    # carries a BM25 score — 0.78 to 3.4 on this library, against semantic
+    # distances of 1.14 to 1.24. Reading both as one number let a BM25
+    # 0.861 pass as a near match and sent "what is kubernetes" to the web.
+    #
+    # A web chunk is excluded for the same reason it sounds wrong: on a
+    # second pass its own results must not vouch for the library.
+    distances = [
+        chunk.score
+        for chunk in chunks
+        if chunk.score is not None
+        and chunk.semantic_rank is not None
+        and not chunk.is_web
+    ]
+
+    if not distances:
+        return False
+
+    return min(distances) <= get_float("web.max_topic_distance")
 
 
 def build_graph():

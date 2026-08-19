@@ -399,10 +399,26 @@ def available_tools(allowed: tuple[str, ...] | None = None) -> dict:
     }
 
 
-def tool_catalogue(allowed: tuple[str, ...] | None = None) -> str:
+# The planner runs *before* retrieval, so it cannot know whether the
+# documents can answer — and web_search is documented for exactly the case
+# it cannot yet see. Offering it here let the model plan a web search on
+# the first pass, which is how "what is python" came back sourced from
+# python.org instead of reported as absent from the library.
+#
+# The rule-based planner already withheld it for this reason. This puts the
+# model planner under the same discipline, leaving the web reachable only
+# once an attempt has actually come up short.
+PLANNER_WITHHELD = ("web_search",)
+
+
+def tool_catalogue(
+    allowed: tuple[str, ...] | None = None,
+    include_withheld: bool = False,
+) -> str:
     """Tool names and descriptions, for the planner prompt."""
 
     return "\n".join(
         f"- {name}: {' '.join(tool_fn.description.split())}"
         for name, tool_fn in available_tools(allowed).items()
+        if include_withheld or name not in PLANNER_WITHHELD
     )

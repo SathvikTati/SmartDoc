@@ -8,6 +8,7 @@ enforced rather than described.
 import pytest
 
 from port6.services.rag import tools as tool_registry
+from port6.services.rag.base import RetrievedChunk
 from port6.services.web import search as web
 
 
@@ -27,7 +28,7 @@ def test_every_tool_accepts_the_arguments_the_agent_passes():
 
 
 def test_the_catalogue_lists_only_offered_tools():
-    catalogue = tool_registry.tool_catalogue()
+    catalogue = tool_registry.tool_catalogue(include_withheld=True)
 
     for name in tool_registry.available_tools():
         assert f"- {name}:" in catalogue
@@ -36,6 +37,23 @@ def test_the_catalogue_lists_only_offered_tools():
 
     for name in withheld:
         assert f"- {name}:" not in catalogue
+
+
+def test_the_planner_is_not_offered_the_web(monkeypatch):
+    """The planner runs before retrieval, so it cannot know the documents
+    failed — and that is the only condition web_search is for.
+
+    Offering it anyway is how "what is python" came back cited to
+    python.org: the model planned a web search on the first pass, before
+    the library had been given a chance to come up short.
+    """
+
+    monkeypatch.setattr(tool_registry, "get_setting", lambda key: True)
+    monkeypatch.setattr(web, "is_available", lambda: True)
+
+    assert "web_search" in tool_registry.available_tools()
+    assert "- web_search:" not in tool_registry.tool_catalogue()
+    assert "- web_search:" in tool_registry.tool_catalogue(include_withheld=True)
 
 
 def test_execution_can_still_resolve_a_withheld_tool():
@@ -206,15 +224,39 @@ def test_the_web_is_tried_only_after_the_documents_fail(monkeypatch):
         lambda allowed=None: {"web_search": None},
     )
 
+    # A library that is at least about the question — a gap, not a
+    # different subject. Without this the topicality gate below stops the
+    # fallback before it starts.
+    on_topic = {
+        "final_context": [
+            RetrievedChunk(
+                number=1,
+                chunk_id="c1",
+                document_id="d1",
+                filename="hr_policy.md",
+                content="Employees are entitled to maternity leave.",
+                score=0.89,
+                sources=["semantic"],
+                semantic_rank=1,
+            )
+        ]
+    }
+
     # Answered from the documents: never reach outside.
-    assert route_after_answer({"answered": True}) is END
+    assert route_after_answer({"answered": True, **on_topic}) is END
 
     # The documents did not answer: try the web.
-    assert route_after_answer({"answered": False}) == "retrieval_planner"
+    assert (
+        route_after_answer({"answered": False, **on_topic})
+        == "retrieval_planner"
+    )
 
     # Already tried: stop, rather than loop.
     assert (
-        route_after_answer({"answered": False, "web_attempted": True}) is END
+        route_after_answer(
+            {"answered": False, "web_attempted": True, **on_topic}
+        )
+        is END
     )
 
 
@@ -227,6 +269,141 @@ def test_no_web_fallback_when_the_tool_is_not_offered(monkeypatch):
     monkeypatch.setattr(agent, "available_tools", lambda allowed=None: {})
 
     assert route_after_answer({"answered": False}) is END
+
+
+class TestTheWebStaysOutOfUnrelatedQuestions:
+    """A gap in the library is not the same as a different subject.
+
+    "UK statutory maternity leave" is a gap: the library is full of leave
+    policy and lacks that one figure, so the web supplements it. "What is
+    python" is not a gap — nothing in the library is about it, and
+    answering from the web turns a document assistant into a search engine.
+    Distance is what tells them apart.
+    """
+
+    def _state(self, distance):
+        return {
+            "answered": False,
+            "query": "what is python",
+            "final_context": [
+                RetrievedChunk(
+                    number=1,
+                    chunk_id="c1",
+                    document_id="d1",
+                    filename="hr_policy.md",
+                    content="Employees are entitled to annual leave.",
+                    score=distance,
+                    sources=["semantic"],
+                    semantic_rank=1,
+                )
+            ],
+        }
+
+    def test_a_question_the_library_is_about_may_reach_the_web(self, monkeypatch):
+        from port6.services.rag import agent
+        from port6.services.rag.agent import route_after_answer
+
+        monkeypatch.setattr(
+            agent, "available_tools", lambda allowed=None: {"web_search": None}
+        )
+        monkeypatch.setattr(agent, "get_float", lambda key: 1.05)
+
+        assert route_after_answer(self._state(0.89)) == "retrieval_planner"
+
+    def test_a_question_it_is_not_about_does_not(self, monkeypatch):
+        from langgraph.graph import END
+
+        from port6.services.rag import agent
+        from port6.services.rag.agent import route_after_answer
+
+        monkeypatch.setattr(
+            agent, "available_tools", lambda allowed=None: {"web_search": None}
+        )
+        monkeypatch.setattr(agent, "get_float", lambda key: 1.05)
+
+        # 1.26 is where "what is python" actually lands on the sample library.
+        assert route_after_answer(self._state(1.26)) is END
+
+    def test_retrieving_nothing_at_all_does_not_reach_the_web(self, monkeypatch):
+        from langgraph.graph import END
+
+        from port6.services.rag import agent
+        from port6.services.rag.agent import route_after_answer
+
+        monkeypatch.setattr(
+            agent, "available_tools", lambda allowed=None: {"web_search": None}
+        )
+
+        assert route_after_answer({"answered": False, "final_context": []}) is END
+
+    def test_a_bm25_score_is_not_read_as_a_distance(self, monkeypatch):
+        """The two live on different scales, and mixing them opened the gate.
+
+        A keyword-only chunk's score is BM25 — 0.78 to 3.4 on the sample
+        library — while semantic distances for the same off-topic question
+        sit at 1.14 and up. Taking the minimum across both let a BM25 0.861
+        pass as a near match, and "what is kubernetes" was answered from
+        kubernetes.io.
+        """
+
+        from port6.services.rag import agent
+        from port6.services.rag.agent import library_is_on_topic
+
+        monkeypatch.setattr(agent, "get_float", lambda key: 1.05)
+
+        assert not library_is_on_topic(
+            {
+                "final_context": [
+                    # Found by keyword alone: 0.861 is a BM25 score.
+                    RetrievedChunk(
+                        number=1,
+                        chunk_id="k1",
+                        document_id="d1",
+                        filename="travel_policy.md",
+                        content="Economy class is standard for all flights.",
+                        score=0.861,
+                        sources=["keyword"],
+                    ),
+                    # What semantic search actually said about the question.
+                    RetrievedChunk(
+                        number=2,
+                        chunk_id="s1",
+                        document_id="d1",
+                        filename="travel_policy.md",
+                        content="Car hire is permitted where impractical.",
+                        score=1.144,
+                        sources=["semantic"],
+                        semantic_rank=1,
+                    ),
+                ]
+            }
+        )
+
+    def test_a_web_chunk_cannot_vouch_for_the_library(self, monkeypatch):
+        """Otherwise the second pass justifies itself with its own results."""
+
+        from port6.services.rag import agent
+        from port6.services.rag.agent import library_is_on_topic
+
+        monkeypatch.setattr(agent, "get_float", lambda key: 1.05)
+
+        assert not library_is_on_topic(
+            {
+                "final_context": [
+                    RetrievedChunk(
+                        number=1,
+                        chunk_id="w1",
+                        document_id="web",
+                        filename="python.org",
+                        content="Python is a programming language.",
+                        url="https://python.org",
+                        score=0.1,
+                        sources=["semantic"],
+                        semantic_rank=1,
+                    )
+                ]
+            }
+        )
 
 
 def test_the_retry_plan_leads_with_the_web_once_it_is_pending():
