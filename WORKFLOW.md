@@ -412,7 +412,13 @@ Two of them are not retrieval:
   answer means. It is off by default, withheld from the planner entirely
   when unavailable, refused outright for a question scoped to specific
   documents, and its results are labelled `WEB` in the context, badged in
-  the UI and linked to their source rather than to a document.
+  the UI and linked to their source rather than to a document. It is also
+  withheld from the planner *always* — planning precedes retrieval, so the
+  planner cannot know the documents failed — and gated on the library
+  being about the question at all: past `web.max_topic_distance` the web is
+  not consulted, so an unrelated question is reported absent rather than
+  answered from the internet. Only semantic distances count towards that,
+  never a keyword chunk's BM25 score.
 
 **Planning** is done by the model on the first attempt (given the tool catalogue, it returns JSON `{"tools": [...], "reason": "..."}`), falling back to rules if the model returns anything unusable. The **retry always uses rules** — it is a deliberate widening to a full hybrid sweep, not a re-plan.
 
@@ -500,6 +506,7 @@ All 25 settings and 8 prompts work the same way. Seeding advances a row that sti
 | Provider unreachable or key expired | classified and reported as a sentence with the fix, not a traceback |
 | `defaults.mode` holds something that is not a mode | logged, falls back to `hybrid` |
 | Web search unavailable or failing | returns nothing; the tool is withheld from the planner rather than offered and left to fail |
+| A question nothing in the library is about | the web is not consulted; reported absent rather than answered from the internet |
 | Phoenix collector down | swallowed. Observability that can take the service down is worse than none |
 | Redis down or absent | swallowed after one warning. Every question is answered as it was before the cache existed |
 | Tesseract not installed | scanned pages are not read, and the refusal says OCR was unavailable rather than that the file was empty |

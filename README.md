@@ -124,7 +124,7 @@ curl -X POST http://localhost:8000/prompts/answer_generation/reset
 uv run pytest
 ```
 
-334 tests over the pure logic the pipeline turns on: heading detection and
+340 tests over the pure logic the pipeline turns on: heading detection and
 the section tree, chunk boundaries and the page a chunk is cited with, RRF
 fusion, citation extraction and hallucination-dropping, evidence overlap,
 provider-failure classification, the prompt-edit guard, per-page OCR
@@ -221,6 +221,25 @@ promise from one citing only your documents. Turn it on with
 `PUT /settings/web.enabled`. Web sources are labelled in the context, in
 the citations and in the UI, and a question scoped to specific documents
 never reaches the web at all.
+
+Three things keep it from becoming a general search engine:
+
+- **The planner is never offered it.** Planning happens before retrieval,
+  so the planner cannot know the documents failed — which is the only
+  condition the tool is for. It is reachable after an attempt has actually
+  come up short, and not before.
+- **A gap is not a non-subject.** "UK statutory maternity leave" is a gap:
+  the library is full of leave policy and simply lacks that figure. "What
+  is python" is not — nothing in the library is about it. Distance tells
+  them apart, and `web.max_topic_distance` (1.05) is where the line sits.
+  On the sample library real questions put the nearest document at
+  0.86–0.89, while `what is python` sits at 1.26, `what is redis` at 1.13
+  and `what is kubernetes` at 1.14. Past the line the web is not consulted
+  and the answer is "not in the library".
+- **Only semantic distance counts.** A keyword-only chunk carries a BM25
+  score, which on this library runs 0.78–3.4 — a different scale
+  entirely. Reading both as one number let a BM25 0.861 pass as a near
+  match and sent `what is kubernetes` to kubernetes.io.
 
 ## Retrieval pipelines
 
@@ -376,6 +395,12 @@ The latency badge reports *this* run — the lookup — with the original figure
 beside it (`2 ms vs 11.45 s`), and the cache badge carries when the answer
 was first produced. Replaying the stored latency instead had a cached answer
 claiming the eleven seconds it had just avoided.
+
+**Comparison never uses it**, neither reading nor writing. The point of
+`/ask/compare` is to watch the strategies work against each other on one
+question; an arm answered from cache would report a lookup instead of its
+own work, and whichever pipeline happened to have been asked before would
+look fastest.
 
 Invalidation is a flush, not arithmetic: anything that changes the index —
 upload, delete, reprocess — clears the whole namespace, because a new

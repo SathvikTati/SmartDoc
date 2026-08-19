@@ -176,7 +176,7 @@ Applied before or around retrieval, in every pipeline.
 | `tests/test_ocr.py` | Per-page classification, the page budget, scanned and mixed PDFs, DOCX figures |
 | `tests/test_cache.py` | Both tiers, scope isolation, invalidation, and degrading when Redis is down |
 
-334 tests. The frontend has its own 19 — see
+340 tests. The frontend has its own 19 — see
 [frontend/CODEBASE.md](frontend/CODEBASE.md).
 
 `test_ocr.py` builds its fixtures rather than committing them: a binary scan
@@ -203,6 +203,7 @@ code's use of five commands.
 | Change how much OCR an upload may do | `PUT /settings/ocr.max_pages` |
 | Turn OCR off, or change its resolution | `PUT /settings/ocr.enabled`, `PUT /settings/ocr.dpi` |
 | Loosen or tighten cached-question matching | `PUT /settings/cache.similarity_threshold` — 1 disables the similarity tier |
+| Change when the agent may reach the web | `PUT /settings/web.max_topic_distance` — lower keeps it closer to the library |
 | Turn the cache off, or move it | `PUT /settings/cache.enabled`, or `.env` `REDIS_URL` |
 | Change chunk size | `config.yaml` `chunking` |
 | Add a document field | `model/models.py` + a migration + `schemas/document.py` |
