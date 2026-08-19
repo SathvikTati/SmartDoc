@@ -1,0 +1,30 @@
+You plan document retrieval. You do not answer questions.
+
+Available tools:
+
+{catalogue}
+
+Given the question, choose between 1 and 3 tools that
+together will find the evidence needed.
+
+Reply with ONLY a JSON object:
+
+{{"tools": ["tool_name", ...], "reason": "one short sentence"}}
+
+Guidance:
+- Questions naming exact terms, codes or rare words need
+  keyword_search.
+- Questions about what documents exist need document_lookup.
+- Questions about the library as a whole — which documents
+  mention X, comparing across documents, what each policy
+  says — need aggregate_search.
+- A question whose answer requires arithmetic needs
+  calculate as well as a retrieval tool: retrieve the
+  numbers, then compute with them.
+- Questions whose answer sits in one part of one document
+  suit hierarchical_search.
+- Otherwise hybrid_search is a good default.
+- Return the JSON object and nothing else.
+
+Question: {query}
+Previous attempt: {previous}

@@ -1,16 +1,18 @@
-app:
-  name: port6
-  environment: development
+# Deploy-time facts only. Runtime tuning (chunk size, retrieval
+# thresholds, agent behaviour) lives in the settings table and is changed
+# through the API; which model to call lives in .env. Only values needed
+# before the database is reachable belong here.
 
-
-# Deploy-time facts. Runtime tuning (chunk size, retrieval thresholds,
-# summary limits, agent behaviour) lives in the `settings` table and is
-# changed through the API; everything about which model to call lives in
-# .env. Only values needed before the database is reachable belong here.
 upload:
-  directory: uploads
-  max_file_size_bytes: 5242880
-  max_files: 5
+  # Resolved against the project root, created on import if missing.
+  directory: uploads              # default: uploads
+
+  max_file_size_bytes: 5242880    # default: 5 MiB
+  max_files: 5                    # default: 5 — per request
+
+  # Effectively required: omit it and the set is empty, which rejects
+  # every upload. PDF, DOCX and DOC are additionally checked for their
+  # magic bytes; the two text types pass that check by definition.
   allowed_types:
     - application/pdf
     - application/vnd.openxmlformats-officedocument.wordprocessingml.document
@@ -18,16 +20,208 @@ upload:
     - text/plain
     - text/markdown
 
-
 database:
-  pool_pre_ping: true
-
-
-parser:
-  normalize_whitespace: true
-
+  # Checks a pooled connection is alive before handing it out. Worth
+  # keeping on against a local Postgres that gets suspended with the
+  # laptop.
+  pool_pre_ping: true             # default: true
 
 vector:
-  provider: chroma
-  persist_directory: chroma_data
-  collection_name: port6_documents
+  persist_directory: chroma_data  # default: chroma_data
+  # A suffix for the active embedding provider and model is appended
+  # automatically — openai and ollama vectors have different dimensions,
+  # so each model gets its own collection and switching provider cannot
+  # corrupt an existing one. This value is only the stem.
+  collection_name: port6_documents  # default: port6_documents
+
+
+# >>> settings reference: generated, do not edit by hand
+#
+# -------------------------------------------------------------------
+# Runtime settings — reference only, not read from this file
+# -------------------------------------------------------------------
+#
+# These live in the `settings` table. They are seeded from the
+# shipped defaults on startup and changed through the API, which is
+# what lets a value be tuned without a restart or a redeploy:
+#
+#     curl -s localhost:8000/settings | python3 -m json.tool
+#     curl -X PUT localhost:8000/settings/defaults.top_k \
+#       -H 'Content-Type: application/json' -d '{"value": 8}'
+#     curl -X POST localhost:8000/settings/defaults.top_k/reset
+#
+# Editing them here does nothing. They are listed so the shipped
+# defaults, and what each one costs you, are readable without a
+# database in front of you.
+#
+# A row you have edited keeps its value; an unedited one follows the
+# shipped default when a release changes it. So this list is what a
+# fresh install starts from, and what `reset` returns a value to.
+#
+# settings:
+#   chunking.chunk_size: 1000
+#      Target characters per chunk.
+#
+#   chunking.chunk_overlap: 200
+#      Characters repeated between neighbouring chunks so a sentence
+#      split across the boundary is still retrievable.
+#
+#   defaults.mode: hybrid
+#      The retrieval mode a new chat starts with: naive, hybrid or
+#      agentic. Chats stay on the three families deliberately —
+#      choosing between the strategies inside one is what the Pipelines
+#      page is for. A request naming its own mode or pipeline overrides
+#      this.
+#
+#   defaults.top_k: 5
+#      How many chunks a new chat retrieves. More is not always better:
+#      past a point the extra chunks are near-misses that dilute the
+#      context the answer is written from.
+#
+#   retrieval.max_distance: null
+#      Drop chunks whose embedding distance exceeds this before
+#      generating. null disables the filter.
+#
+#   summary.max_input_characters: 12000
+#      Characters sent per summarisation call. A longer document is
+#      summarised in sections and the parts combined.
+#
+#   summary.max_words: 150
+#      Target length of a document summary.
+#
+#   summary.max_sections: 6
+#      Most section summaries to produce for a long document before
+#      combining them. Bounds the cost of ingesting a large file.
+#
+#   agent.max_attempts: 2
+#      How many times the agent may plan and retrieve before it has to
+#      answer or decline.
+#
+#   agent.catalogue_limit: 50
+#      Most documents document_lookup will list. Bounds the context a
+#      catalogue question can consume.
+#
+#   agent.catalogue_summary_characters: 140
+#      How much of each summary the catalogue shows, so filenames stay
+#      legible in a long listing.
+#
+#   validation.min_overlap: 0.2
+#      Below this share of the question's key terms in the retrieved
+#      text, evidence is rejected without asking the model.
+#
+#   validation.skip_model_above: 0.75
+#      Above this overlap the evidence is accepted without asking the
+#      model. Small models produce false negatives on obviously good
+#      retrievals, and each one costs a wasted retry.
+#
+#   conflicts.enabled: true
+#      Notice when two documents give different figures for the same
+#      thing, answer from the most recently uploaded, and say what the
+#      older one said.
+#
+#   calculation.enabled: true
+#      After retrieval, work out any arithmetic the answer depends on
+#      and offer the result as a source. Runs in every mode, so a
+#      question needing a sum is not left to the model's arithmetic.
+#
+#   aggregation.enabled: true
+#      Detect questions that need breadth across documents ("which
+#      documents mention X") and retrieve for coverage instead of
+#      depth.
+#
+#   aggregation.max_documents: 8
+#      Most documents an aggregation answer covers. Bounds the context
+#      an enumeration question can consume.
+#
+#   aggregation.chunks_per_document: 2
+#      Chunks taken from each document when aggregating, so one verbose
+#      document cannot crowd the others out.
+#
+#   aggregation.excerpt_characters: 420
+#      How much of each chunk an aggregation answer sees per document.
+#      Aggregation is about breadth, and handed the full text of six
+#      documents the model transcribes instead of summarising.
+#
+#   aggregation.require_keyword_match: true
+#      When aggregating, only cover documents the keyword retriever
+#      actually found. Semantic search returns the nearest chunk from
+#      every document whether or not it mentions the topic, and those
+#      near-misses dilute an enumeration answer.
+#
+#   conversation.enabled: true
+#      Resolve a question against the conversation it arrived in, so
+#      "what about sick leave?" is understood as a follow-up.
+#
+#   conversation.history_turns: 4
+#      Recent turns shown to the follow-up classifier. Enough to
+#      resolve a reference, short enough that a stale topic from ten
+#      questions ago cannot pull the answer off course.
+#
+#   conversation.carry_over_chunks: 3
+#      Chunks carried from the previous turn into a follow-up's
+#      context. Capped so prior material cannot outweigh what the
+#      rewritten question actually retrieved.
+#
+#   web.enabled: false
+#      Offer the web_search tool to the agent. Off by default: an
+#      answer citing the public internet is a different promise from
+#      one citing only your documents, so reaching outside the library
+#      is an explicit choice.
+#
+#   ocr.enabled: true
+#      Read scanned pages with OCR when a text layer does not cover
+#      them. On by default: without it a scanned file is refused as
+#      empty, which reads as a fault rather than a choice. Needs the
+#      tesseract binary — where that is missing, parsing behaves as
+#      though this were off.
+#
+#   ocr.max_pages: 20
+#      Most pages one upload may OCR. OCR runs inside the upload
+#      request, so this is what stops a large scan from outliving the
+#      browser's patience; a file needing more is refused up front,
+#      before any page is rasterised. Counted in images for a DOCX,
+#      which has no pages.
+#
+#   ocr.dpi: 200
+#      Resolution pages are rasterised at before OCR. Higher reads
+#      small print more reliably and costs time; lower can miss a low-
+#      resolution figure entirely rather than reading it badly.
+#
+#   cache.enabled: true
+#      Answer a question from the cache when the same one has been
+#      asked before. Cleared whenever a document is added, deleted or
+#      reprocessed, so a cached answer cannot outlive the documents it
+#      was drawn from.
+#
+#   cache.ttl_seconds: 86400
+#      How long a cached answer stays valid. Library changes clear the
+#      cache outright, so this is the backstop for everything that
+#      changes without one — an edited prompt, a different model, or a
+#      web result that has since moved on.
+#
+#   cache.similarity_threshold: 0.95
+#      How close a differently-worded question must be to reuse a
+#      cached answer, as cosine similarity. Deliberately high: "sick
+#      leave days" and "annual leave days" are near neighbours, and
+#      answering one with the other would be confident and wrong. Set
+#      to 1 to require exact wording.
+#
+#   cache.max_candidates: 500
+#      Most cached questions compared against per scope when looking
+#      for a close match. Bounds the work a miss can do; the oldest
+#      entries drop out of the comparison set beyond this.
+#
+#   web.max_topic_distance: 1.05
+#      How far the nearest document may be before a question counts as
+#      nothing to do with the library, as embedding distance. Past it
+#      the web is not consulted at all: if no document is even close to
+#      the question, there is nothing for the web to supplement, and
+#      answering anyway turns a document assistant into a search
+#      engine. Measured on the sample library: real questions land at
+#      0.86-0.89, "what is python" at 1.26.
+#
+#   history.retain_runs: 500
+#      Most query runs kept. The oldest are trimmed beyond this so
+#      history cannot grow without bound.
+#
+# <<< end settings reference

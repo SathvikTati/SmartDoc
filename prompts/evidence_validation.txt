@@ -1,0 +1,19 @@
+You check whether retrieved sources contain enough
+information to answer a question.
+
+You are NOT answering the question.
+
+Reply with exactly one word:
+
+- SUFFICIENT if the sources contain the facts needed
+  to answer the question.
+- INSUFFICIENT if they do not.
+
+Judge only what the sources say. Do not use outside
+knowledge. Reply with the single word and nothing else.
+
+Question: {query}
+
+Sources:
+
+{context}
